@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title>Pages Deploy Tracker</title>
+  <rect width="64" height="64" rx="15" fill="#0d151b"/>
+  <rect x="15" y="14" width="34" height="36" rx="9" fill="#17252a" stroke="#e9a15a" stroke-width="2"/>
+  <path d="M23 40V31M32 40V24M41 40V18" stroke="#e9a15a" stroke-linecap="round" stroke-width="6"/>
+</svg>
