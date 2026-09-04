@@ -1,4 +1,4 @@
-import type { ApiWarning } from "../../shared/types";
+import type { ApiErrorDetails, ApiWarning } from "../../shared/types";
 
 export const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 export const DEFAULT_TIMEOUT_MS = 10_000;
@@ -10,19 +10,25 @@ export class CloudflareApiError extends Error {
   readonly status?: number;
   readonly code: string;
   readonly retryable: boolean;
+  readonly details: ApiErrorDetails;
 
-  constructor(message: string, options: { status?: number; code?: string; retryable?: boolean } = {}) {
+  constructor(message: string, options: { status?: number; code?: string; retryable?: boolean; details?: ApiErrorDetails } = {}) {
     super(message);
     this.name = "CloudflareApiError";
-    this.status = options.status;
+    this.status = options.status ?? options.details?.status;
     this.code = options.code ?? "CLOUDFLARE_API_ERROR";
     this.retryable = options.retryable ?? false;
+    this.details = { ...options.details, status: this.status, retryable: this.retryable };
   }
 }
 
 export interface RequestDependencies {
   fetcher?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
+  requestId?: string;
+  operation?: string;
+  projectName?: string;
+  logger?: (event: string, details: ApiErrorDetails & { code?: string; message?: string }) => void;
 }
 
 interface RequestOptions extends RequestDependencies {
@@ -46,6 +52,30 @@ export interface CloudflarePageInfo {
 
 const defaultSleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
+const MAX_RESPONSE_BODY_LENGTH = 2_000;
+
+const diagnosticEndpoint = (path: string): string => path.replace(/^\/accounts\/[^/]+/, "/accounts/{account}");
+
+const diagnosticBody = (body: unknown): string | undefined => {
+  if (body === undefined) return undefined;
+  let value = typeof body === "string" ? body : JSON.stringify(body);
+  value = value.replace(/Bearer\s+[A-Za-z0-9._~-]+/gi, "Bearer [redacted]");
+  value = value.replace(/(authorization|api[_-]?token|access[_-]?token)(["']?\s*[:=]\s*["']?)[^,\s"'}]+/gi, "$1$2[redacted]");
+  return value.length > MAX_RESPONSE_BODY_LENGTH ? `${value.slice(0, MAX_RESPONSE_BODY_LENGTH)}…` : value;
+};
+
+const defaultLogger = (event: string, details: ApiErrorDetails & { code?: string; message?: string }) => {
+  console.error(`[pages-deploy-tracker] ${event}`, JSON.stringify(details));
+};
+
+const responseDetails = (response: Response, body: unknown): Pick<ApiErrorDetails, "status" | "responseContentType" | "responseBody" | "cfRay" | "retryAfter"> => ({
+  status: response.status,
+  responseContentType: response.headers.get("content-type") ?? undefined,
+  responseBody: diagnosticBody(body),
+  cfRay: response.headers.get("cf-ray") ?? undefined,
+  retryAfter: response.headers.get("retry-after") ?? undefined,
+});
+
 const isRetryableStatus = (status: number) => status === 429 || status >= 500;
 
 const errorMessage = (body: unknown, fallback: string): string => {
@@ -65,10 +95,13 @@ const retryAfterMilliseconds = (response: Response, attempt: number): number => 
 async function requestCloudflareEnvelope<T>(path: string, token: string, options: RequestOptions = {}): Promise<CloudflareEnvelope<T>> {
   const fetcher = options.fetcher ?? fetch;
   const sleep = options.sleep ?? defaultSleep;
+  const logger = options.logger ?? defaultLogger;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const endpoint = diagnosticEndpoint(path);
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const attemptStartedAt = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let response: Response;
@@ -82,10 +115,26 @@ async function requestCloudflareEnvelope<T>(path: string, token: string, options
         signal: controller.signal,
       });
     } catch (error) {
+      const details: ApiErrorDetails = {
+        requestId: options.requestId,
+        operation: options.operation,
+        endpoint,
+        method: "GET",
+        projectName: options.projectName,
+        attempt: attempt + 1,
+        maxAttempts,
+        retryable: true,
+        elapsedMs: Date.now() - attemptStartedAt,
+        cause: error instanceof Error ? error.message : String(error),
+      };
       if (error instanceof Error && error.name === "AbortError") {
-        throw new CloudflareApiError("Cloudflare API request timed out.", { code: "CLOUDFLARE_TIMEOUT", retryable: true });
+        const apiError = new CloudflareApiError("Cloudflare API request timed out.", { code: "CLOUDFLARE_TIMEOUT", retryable: true, details });
+        logger("cloudflare_request_error", { ...details, code: apiError.code, message: apiError.message });
+        throw apiError;
       }
-      throw new CloudflareApiError("Cloudflare API request could not be completed.", { code: "CLOUDFLARE_NETWORK_ERROR", retryable: true });
+      const apiError = new CloudflareApiError("Cloudflare API request could not be completed.", { code: "CLOUDFLARE_NETWORK_ERROR", retryable: true, details });
+      logger("cloudflare_request_error", { ...details, code: apiError.code, message: apiError.message });
+      throw apiError;
     } finally {
       clearTimeout(timeout);
     }
@@ -100,26 +149,80 @@ async function requestCloudflareEnvelope<T>(path: string, token: string, options
     if (response.ok) {
       const envelope = body as CloudflareEnvelope<T>;
       if (envelope.success === false || envelope.result === undefined) {
-        throw new CloudflareApiError(errorMessage(body, "Cloudflare returned an invalid response."), { code: "CLOUDFLARE_INVALID_RESPONSE" });
+        const details: ApiErrorDetails = {
+          requestId: options.requestId,
+          operation: options.operation,
+          endpoint,
+          method: "GET",
+          projectName: options.projectName,
+          attempt: attempt + 1,
+          maxAttempts,
+          retryable: false,
+          elapsedMs: Date.now() - attemptStartedAt,
+          ...responseDetails(response, body),
+        };
+        const apiError = new CloudflareApiError(errorMessage(body, "Cloudflare returned an invalid response."), { code: "CLOUDFLARE_INVALID_RESPONSE", details });
+        logger("cloudflare_request_error", { ...details, code: apiError.code, message: apiError.message });
+        throw apiError;
       }
       return envelope;
     }
 
     const retryable = isRetryableStatus(response.status);
     if (retryable && attempt < maxAttempts - 1) {
-      await sleep(retryAfterMilliseconds(response, attempt));
+      const nextRetryMs = retryAfterMilliseconds(response, attempt);
+      logger("cloudflare_request_retry", {
+        requestId: options.requestId,
+        operation: options.operation,
+        endpoint,
+        method: "GET",
+        projectName: options.projectName,
+        attempt: attempt + 1,
+        maxAttempts,
+        retryable,
+        elapsedMs: Date.now() - attemptStartedAt,
+        nextRetryMs,
+        ...responseDetails(response, body),
+      });
+      await sleep(nextRetryMs);
       continue;
     }
 
     const code = response.status === 401 || response.status === 403 ? "CLOUDFLARE_AUTHENTICATION_ERROR" : response.status === 429 ? "CLOUDFLARE_RATE_LIMITED" : `CLOUDFLARE_HTTP_${response.status}`;
-    throw new CloudflareApiError(errorMessage(body, `Cloudflare returned HTTP ${response.status}.`), {
+    const details: ApiErrorDetails = {
+      requestId: options.requestId,
+      operation: options.operation,
+      endpoint,
+      method: "GET",
+      projectName: options.projectName,
+      attempt: attempt + 1,
+      maxAttempts,
+      retryable,
+      elapsedMs: Date.now() - attemptStartedAt,
+      ...responseDetails(response, body),
+    };
+    const apiError = new CloudflareApiError(errorMessage(body, `Cloudflare returned HTTP ${response.status}.`), {
       status: response.status,
       code,
       retryable,
+      details,
     });
+    logger("cloudflare_request_error", { ...details, code: apiError.code, message: apiError.message });
+    throw apiError;
   }
 
-  throw new CloudflareApiError("Cloudflare API request failed after retries.", { code: "CLOUDFLARE_RETRY_EXHAUSTED", retryable: true });
+  const details: ApiErrorDetails = {
+    requestId: options.requestId,
+    operation: options.operation,
+    endpoint,
+    method: "GET",
+    projectName: options.projectName,
+    maxAttempts,
+    retryable: true,
+  };
+  const apiError = new CloudflareApiError("Cloudflare API request failed after retries.", { code: "CLOUDFLARE_RETRY_EXHAUSTED", retryable: true, details });
+  logger("cloudflare_request_error", { ...details, code: apiError.code, message: apiError.message });
+  throw apiError;
 }
 
 export async function requestCloudflareJson<T>(path: string, token: string, options: RequestOptions = {}): Promise<T> {
@@ -175,9 +278,10 @@ export async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper
   return results;
 }
 
-export function classifyApiError(error: unknown, projectName?: string): ApiWarning {
+export function classifyApiError(error: unknown, projectName?: string, fallbackDetails: ApiErrorDetails = {}): ApiWarning {
   if (error instanceof CloudflareApiError) {
-    return { code: error.code, message: error.message, projectName, status: error.status };
+    return { code: error.code, message: error.message, projectName, status: error.status, details: { ...fallbackDetails, ...error.details, projectName: projectName ?? error.details.projectName } };
   }
-  return { code: "UNEXPECTED_ERROR", message: "An unexpected error occurred while contacting Cloudflare.", projectName };
+  const cause = error instanceof Error ? error.message : String(error);
+  return { code: "UNEXPECTED_ERROR", message: `An unexpected error occurred while contacting Cloudflare: ${cause}`, projectName, details: { ...fallbackDetails, projectName, cause } };
 }

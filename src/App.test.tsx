@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -28,40 +28,64 @@ describe("dashboard", () => {
   it("shows a loading state before the first response", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
     render(<App />);
-    expect(screen.getByText("Loading your Pages projects…")).toBeInTheDocument();
+    expect(screen.getByText("Pulling your Pages projects…")).toBeInTheDocument();
+    expect(screen.getByLabelText("Loading project search")).toBeInTheDocument();
     expect(screen.getAllByTestId("project-skeleton")).toHaveLength(10);
   });
 
-  it("renders the status summary and project states", async () => {
+  it("renders a minimal project index", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(data), { status: 200 })));
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "checkout" })).toBeInTheDocument();
-    expect(screen.getByText("Running")).toBeInTheDocument();
-    expect(screen.getAllByText("Queued").length).toBeGreaterThan(1);
-    expect(screen.getAllByText("Successful").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Failed").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Canceled").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("build", { selector: ".stage-name" }).length).toBeGreaterThan(0);
-    expect(screen.getByText("5 of 39")).toBeInTheDocument();
+    expect(await screen.findByText("checkout")).toBeInTheDocument();
+    expect(screen.queryByText("Running")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Filter by status" })).not.toBeInTheDocument();
+    expect(screen.getByText("39 total")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next project page" })).toBeEnabled();
   });
 
-  it("supports pause and status filtering", async () => {
+  it("searches projects from the homepage without triggering polling", async () => {
+    const user = userEvent.setup();
+    const timerSpy = vi.spyOn(window, "setTimeout");
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(data), { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    render(<App />);
+    expect(await screen.findByText("checkout")).toBeInTheDocument();
+    await user.type(screen.getByRole("searchbox", { name: "Search projects" }), "market");
+    expect(screen.getByText("checkout")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Submit project search" }));
+    expect(screen.getByText("marketing")).toBeInTheDocument();
+    expect(screen.queryByText("checkout")).not.toBeInTheDocument();
+    expect(timerSpy.mock.calls.some(([, delay]) => typeof delay === "number" && delay >= 10_000)).toBe(false);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("opens a project monitor with pull and polling controls", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(data), { status: 200 })));
     render(<App />);
-    await screen.findByRole("heading", { name: "checkout" });
-    await user.click(screen.getByRole("button", { name: "Pause polling" }));
+    await user.click(await screen.findByRole("link", { name: /checkout/ }));
+    expect(await screen.findByRole("heading", { name: "checkout", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pull latest deployment data" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Pause" }));
     expect(screen.getByText("LIVE")).toBeInTheDocument();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by status" }), "failure");
-    expect(screen.getByRole("heading", { name: "api" })).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole("heading", { name: "checkout" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+    expect(screen.getByText("Monitoring paused")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/projects/checkout");
   });
 
   it("shows ERROR when the deployment connection fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Connection failed")));
     render(<App />);
     expect(await screen.findByText("ERROR")).toBeInTheDocument();
+  });
+
+  it("shows structured API diagnostics when the deployment service returns an error", async () => {
+    const error = { code: "CLOUDFLARE_HTTP_502", message: "upstream failed", status: 502, details: { requestId: "req-1", endpoint: "/accounts/{account}/pages/projects", responseBody: "gateway down" } };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error }), { status: 502, headers: { "Content-Type": "application/json" } })));
+    render(<App />);
+    expect(await screen.findByText(/upstream failed/)).toBeInTheDocument();
+    expect(screen.getByText(/requestId/)).toBeInTheDocument();
+    expect(screen.getByText(/gateway down/)).toBeInTheDocument();
   });
 
   it("navigates between project pages and updates the URL", async () => {
@@ -74,9 +98,9 @@ describe("dashboard", () => {
       return Promise.resolve(new Response(JSON.stringify(pageData), { status: 200 }));
     }));
     render(<App />);
-    await screen.findByRole("heading", { name: "checkout" });
+    await screen.findByText("checkout");
     await user.click(screen.getByRole("button", { name: "Next project page" }));
-    expect(await screen.findByRole("heading", { name: "marketing" })).toBeInTheDocument();
+    expect(await screen.findByText("marketing")).toBeInTheDocument();
     expect(screen.getByText("Page 2 of 4")).toBeInTheDocument();
     expect(window.location.search).toBe("?page=2");
   });
@@ -90,12 +114,12 @@ describe("dashboard", () => {
       return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
     }));
     render(<App />);
-    await screen.findByRole("heading", { name: "checkout" });
+    await screen.findByText("checkout");
     await user.click(screen.getByRole("button", { name: "Next project page" }));
     expect(screen.getAllByTestId("project-skeleton")).toHaveLength(10);
     expect(screen.queryByRole("heading", { name: "checkout" })).not.toBeInTheDocument();
     resolveNextPage(new Response(JSON.stringify({ ...data, pagination: { ...data.pagination, page: 2 }, projects: [data.projects[1]] }), { status: 200 }));
-    expect(await screen.findByRole("heading", { name: "marketing" })).toBeInTheDocument();
+    expect(await screen.findByText("marketing")).toBeInTheDocument();
   });
 
   it("cycles theme modes and persists the selected mode", async () => {
@@ -103,7 +127,7 @@ describe("dashboard", () => {
     localStorage.clear();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(data), { status: 200 })));
     render(<App />);
-    await screen.findByRole("heading", { name: "checkout" });
+    await screen.findByText("checkout");
     const themeButton = screen.getByRole("button", { name: "Theme mode: auto. Switch to dark" });
     await user.click(themeButton);
     expect(themeButton).toHaveAttribute("aria-label", "Theme mode: dark. Switch to light");

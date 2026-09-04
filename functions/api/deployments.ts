@@ -1,4 +1,4 @@
-import type { ApiWarning, DeploymentSummary, DeploymentsResponse, ProjectDeployment } from "../../shared/types";
+import type { ApiErrorDetails, ApiWarning, DeploymentSummary, DeploymentsResponse, ProjectDeployment } from "../../shared/types";
 import { calculateSummary, normalizeDeployment, normalizeProject, sortProjects, type CloudflareDeployment, type CloudflareProject } from "../../shared/normalize";
 import {
   classifyApiError,
@@ -39,19 +39,20 @@ export async function collectDeployments(accountId: string, token: string, optio
   const projectPath = `/accounts/${encodePathPart(accountId)}/pages/projects`;
   const page = Math.max(1, Math.floor(options.page ?? 1));
   const perPage = options.projectPageSize ?? DEFAULT_PROJECT_PAGE_SIZE;
-  const projectPage = await requestCloudflarePage<CloudflareProject[]>(`${projectPath}?page=${page}&per_page=${perPage}`, token, options);
+  const projectPage = await requestCloudflarePage<CloudflareProject[]>(`${projectPath}?page=${page}&per_page=${perPage}`, token, { ...options, operation: "list_projects" });
   const rawProjects = projectPage.result;
   const projects = rawProjects.map((project) => normalizeProject(project, options.accountDashboardId ?? accountId));
   const projectResults = await mapWithConcurrency(projects, options.projectConcurrency ?? 6, async (project) => {
+    const deploymentPath = `${projectPath}/${encodePathPart(project.projectName)}/deployments?page=1&per_page=${options.deploymentPageSize ?? DEFAULT_DEPLOYMENT_PAGE_SIZE}`;
     try {
-      const deploymentPath = `${projectPath}/${encodePathPart(project.projectName)}/deployments?page=1&per_page=${options.deploymentPageSize ?? DEFAULT_DEPLOYMENT_PAGE_SIZE}`;
-      const rawDeployments = await requestCloudflareJson<CloudflareDeployment[]>(deploymentPath, token, options);
+      const rawDeployments = await requestCloudflareJson<CloudflareDeployment[]>(deploymentPath, token, { ...options, operation: "list_project_deployments", projectName: project.projectName });
       const deployments = rawDeployments
         .map((deployment) => normalizeDeployment(deployment, accountId, project.projectName))
         .sort((left, right) => deploymentTimestamp(right) - deploymentTimestamp(left));
       return { ...project, deployments } satisfies ProjectDeployment;
     } catch (error) {
-      const warning = classifyApiError(error, project.projectName);
+      const warning = classifyApiError(error, project.projectName, { requestId: options.requestId, operation: "list_project_deployments", endpoint: deploymentPath });
+      (options.logger ?? defaultRequestLogger)("project_deployments_error", { ...warning.details, code: warning.code, message: warning.message });
       return { ...project, deployments: [], error: warning } satisfies ProjectDeployment;
     }
   });
@@ -91,20 +92,31 @@ const errorResponse = (warning: ApiWarning, response?: Partial<DeploymentsRespon
   return new Response(JSON.stringify(payload), { status: warningStatus(warning), headers: jsonHeaders });
 };
 
+const defaultRequestLogger = (event: string, details: ApiErrorDetails & { code?: string; message?: string }) => {
+  console.error(`[pages-deploy-tracker] ${event}`, JSON.stringify(details));
+};
+
 export const onRequestGet: PagesFunction<TrackerEnv> = async (context) => {
+  const requestId = context.request.headers.get("cf-ray") ?? crypto.randomUUID();
   const accountId = context.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = context.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
-    return errorResponse({ code: "MISSING_CONFIGURATION", message: "The server is missing Cloudflare account configuration." });
+    const warning: ApiWarning = {
+      code: "MISSING_CONFIGURATION",
+      message: "The server is missing Cloudflare account configuration.",
+      details: { requestId, operation: "validate_configuration", endpoint: "/api/deployments", method: "GET", cause: `CLOUDFLARE_ACCOUNT_ID=${accountId ? "present" : "missing"}; CLOUDFLARE_API_TOKEN=${token ? "present" : "missing"}` },
+    };
+    defaultRequestLogger("configuration_error", { ...warning.details, code: warning.code, message: warning.message });
+    return errorResponse(warning);
   }
 
   try {
     const requestedPage = Number(new URL(context.request.url).searchParams.get("page") ?? "1");
     const page = Number.isFinite(requestedPage) && requestedPage >= 1 ? Math.floor(requestedPage) : 1;
-    const data = await collectDeployments(accountId, token, { page });
+    const data = await collectDeployments(accountId, token, { page, requestId, logger: defaultRequestLogger });
     return new Response(JSON.stringify(data), { headers: jsonHeaders });
   } catch (error) {
-    const warning = classifyApiError(error);
+    const warning = classifyApiError(error, undefined, { requestId, operation: "collect_deployments", endpoint: "/api/deployments", method: "GET" });
     if (error instanceof CloudflareApiError && error.status === 401) {
       warning.message = "Cloudflare rejected the API token. Check that it is valid and has Pages Read access.";
     } else if (error instanceof CloudflareApiError && error.status === 403) {
@@ -112,6 +124,7 @@ export const onRequestGet: PagesFunction<TrackerEnv> = async (context) => {
     } else if (error instanceof CloudflareApiError && error.status === 429) {
       warning.message = "Cloudflare rate-limited the tracker. Try again shortly.";
     }
+    defaultRequestLogger("deployment_collection_error", { ...warning.details, code: warning.code, message: warning.message });
     return errorResponse(warning);
   }
 };

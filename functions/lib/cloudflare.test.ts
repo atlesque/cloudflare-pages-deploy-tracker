@@ -32,8 +32,14 @@ describe("Cloudflare API client", () => {
 
   it("does not retry authentication failures", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ errors: [{ message: "unauthorized" }] }, 401));
-    await expect(requestCloudflareJson("/accounts/account/pages/projects", "secret-token", { fetcher, sleep: vi.fn() })).rejects.toMatchObject({ status: 401, retryable: false });
+    const logger = vi.fn();
+    await expect(requestCloudflareJson("/accounts/account/pages/projects", "secret-token", { fetcher, sleep: vi.fn(), requestId: "req-1", operation: "list_projects", logger })).rejects.toMatchObject({
+      status: 401,
+      retryable: false,
+      details: expect.objectContaining({ endpoint: "/accounts/{account}/pages/projects", status: 401, attempt: 1, responseBody: expect.stringContaining("unauthorized") }),
+    });
     expect(fetcher).toHaveBeenCalledOnce();
+    expect(logger).toHaveBeenCalledWith("cloudflare_request_error", expect.objectContaining({ requestId: "req-1", operation: "list_projects", status: 401, responseBody: expect.stringContaining("unauthorized") }));
   });
 
   it("keeps concurrent project work bounded", async () => {

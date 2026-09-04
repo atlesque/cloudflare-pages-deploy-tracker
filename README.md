@@ -52,9 +52,9 @@ The API token should be narrowly scoped to the target account with `Pages Read`.
 
 ## API behavior
 
-`GET /api/deployments?page=1` returns one page of 10 accessible Pages projects, includes the account-wide project total and page metadata, and fetches a recent deployment page for each project with a concurrency limit of six. Transient 429 and 5xx responses retry with bounded exponential backoff; authentication, authorization, validation, and not-found errors do not retry. A failed project becomes a project-level warning while other projects remain visible.
+`GET /api/deployments?page=1` returns one page of 10 accessible Pages projects, includes the account-wide project total and page metadata, and fetches a recent deployment page for each project with a concurrency limit of six. Transient 429 and 5xx responses retry with bounded exponential backoff; authentication, authorization, validation, and not-found errors do not retry. A failed project becomes a project-level warning while other projects remain visible. Failed requests include a request ID, redacted endpoint, HTTP status, response content type/body preview, retry metadata, and elapsed time in both the server log and API warning.
 
-The endpoint does not trigger, cancel, retry, delete, or modify deployments. No D1, KV, R2, or other persistence is used in v1. The client keeps its latest successful result in memory and polls every 10 seconds by default, with pause, manual refresh, interval, status filter, and search controls.
+The endpoint does not trigger, cancel, retry, delete, or modify deployments. No D1, KV, R2, or other persistence is used in v1. The client keeps its latest successful result in memory and polls every 10 seconds by default, with pause, manual refresh, and interval controls on each project detail page.
 
 ## Troubleshooting
 
@@ -62,6 +62,8 @@ The endpoint does not trigger, cancel, retry, delete, or modify deployments. No 
 - `Cloudflare denied access`: check the account ID and token scope.
 - Rate-limit warnings: leave polling paused or increase the interval, then refresh after the limit clears.
 - Local API errors: run `pnpm build` before `pnpm pages:dev`; Wrangler reads `.env` or `.dev.vars` from the project root.
+- If `http://localhost:5173/` shows a failed deployment request, that is the frontend-only Vite server. Open the full Pages preview at `http://localhost:8788/` after starting `pnpm pages:dev`.
+- For exact diagnostics, inspect the terminal running Wrangler for `[pages-deploy-tracker]` events. Response bodies are truncated and credentials are redacted before logging.
 
 ## Verification
 

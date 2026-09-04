@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ApiWarning, DeploymentSummary, DeploymentsResponse, ProjectDeployment, StatusFilter } from "../shared/types";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { filterProjects } from "../shared/normalize";
+import type { ApiWarning, DeploymentSummary, DeploymentsResponse, ProjectDeployment, StatusFilter } from "../shared/types";
 
 const POLL_OPTIONS = [
   { label: "10 seconds", value: 10_000 },
@@ -42,6 +42,18 @@ interface ErrorPayload {
   error?: ApiWarning;
 }
 
+const diagnosticMessage = (warning: ApiWarning | undefined, fallback: string): string => {
+  if (!warning) return fallback;
+  const details = warning.details ? `\n\nDiagnostics:\n${JSON.stringify(warning.details, null, 2)}` : "";
+  return `${warning.message} [${warning.code}]${warning.status ? ` HTTP ${warning.status}` : ""}${details}`;
+};
+
+const responsePreview = (body: string): string => {
+  const trimmed = body.trim();
+  if (!trimmed) return "<empty response>";
+  return trimmed.length > 1_000 ? `${trimmed.slice(0, 1_000)}…` : trimmed;
+};
+
 const statusLabels: Record<StatusFilter, string> = {
   all: "All statuses",
   active: "Active",
@@ -77,16 +89,34 @@ const readProjectPage = (): number => {
   return Number.isInteger(value) && value > 0 ? value : 1;
 };
 
+const readSelectedProject = (): string | null => {
+  const match = window.location.pathname.match(/^\/projects\/([^/]+)\/?$/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+};
+
 async function getDeployments(signal: AbortSignal, page: number): Promise<DeploymentsResponse> {
-  const response = await fetch(`/api/deployments?page=${page}`, { signal, cache: "no-store" });
-  const contentType = response.headers.get("content-type") ?? "";
+  const requestUrl = `/api/deployments?page=${page}`;
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, { signal, cache: "no-store" });
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new Error(`Deployment API request failed. GET ${requestUrl}. Cause: ${cause}. For local development, use the full Pages server with \`pnpm build\` then \`pnpm pages:dev\`; Vite alone does not run the Pages Function.`);
+  }
+  const contentType = response.headers.get("content-type") ?? "<missing>";
+  const responseText = await response.text();
   let body: DeploymentsResponse & ErrorPayload;
   try {
-    body = (await response.json()) as DeploymentsResponse & ErrorPayload;
+    body = JSON.parse(responseText) as DeploymentsResponse & ErrorPayload;
   } catch {
-    throw new Error(contentType.includes("text/html") ? "The local deployment API is not running. Start it with `pnpm pages:dev` and refresh this page." : "The deployment service returned an invalid response.");
+    throw new Error(`Deployment API returned a non-JSON response. GET ${requestUrl}. HTTP ${response.status} ${response.statusText || "(no status text)"}. Content-Type: ${contentType}. Response preview: ${responsePreview(responseText)}`);
   }
-  if (!response.ok) throw new Error(body.error?.message ?? "The deployment service could not be reached.");
+  if (!response.ok) throw new Error(diagnosticMessage(body.error, `Deployment API returned HTTP ${response.status} ${response.statusText || "(no status text)"}. Content-Type: ${contentType}. Response preview: ${responsePreview(responseText)}`));
   return body;
 }
 
@@ -95,9 +125,9 @@ function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [intervalMs, setIntervalMs] = useState(POLL_OPTIONS[0].value);
   const [failureCount, setFailureCount] = useState(0);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [query, setQuery] = useState("");
   const [page, setPage] = useState(readProjectPage);
+  const [query, setQuery] = useState("");
+  const [selectedProjectName, setSelectedProjectName] = useState<string | null>(readSelectedProject);
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
   const [systemTheme, setSystemTheme] = useState<"dark" | "light">(readSystemTheme);
   const inFlight = useRef(false);
@@ -112,6 +142,12 @@ function App() {
     const onThemeChange = (event: MediaQueryListEvent) => setSystemTheme(event.matches ? "dark" : "light");
     mediaQuery.addEventListener?.("change", onThemeChange);
     return () => mediaQuery.removeEventListener?.("change", onThemeChange);
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => setSelectedProjectName(readSelectedProject());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   useEffect(() => {
@@ -141,6 +177,7 @@ function App() {
       if (!mounted.current || (error instanceof Error && error.name === "AbortError")) return;
       const current = loadStateRef.current;
       const previous = current.status === "success" ? current.data : current.previous;
+      console.error("[pages-deploy-tracker] browser_request_error", JSON.stringify({ endpoint: `/api/deployments?page=${requestedPage}`, method: "GET", page: requestedPage, error: error instanceof Error ? error.message : String(error) }));
       setFailureCount((count) => count + 1);
       setLoadState({ status: "error", message: error instanceof Error ? error.message : "The deployment service could not be reached.", previous });
     } finally {
@@ -160,14 +197,15 @@ function App() {
 
   const hasData = loadState.status === "success" || Boolean(loadState.status === "error" && loadState.previous);
   useEffect(() => {
-    if (isPaused || !hasData || loadState.status === "loading") return;
+    if (!selectedProjectName || isPaused || !hasData || loadState.status === "loading") return;
     const delay = Math.min(intervalMs * 2 ** Math.min(failureCount, 3), 120_000);
     const timer = window.setTimeout(() => void refresh(), delay);
     return () => window.clearTimeout(timer);
-  }, [failureCount, hasData, intervalMs, isPaused, loadState.status, refresh]);
+  }, [failureCount, hasData, intervalMs, isPaused, loadState.status, refresh, selectedProjectName]);
 
   const data = loadState.status === "success" ? loadState.data : loadState.status === "error" ? loadState.previous : loadState.status === "loading" ? loadState.previous : undefined;
-  const visibleProjects = useMemo(() => (data ? filterProjects(data.projects, statusFilter, query) : []), [data, query, statusFilter]);
+  const visibleProjects = useMemo(() => data ? filterProjects(data.projects, "all", query) : [], [data, query]);
+  const selectedProject = useMemo(() => visibleProjects.find((project) => project.projectName === selectedProjectName), [selectedProjectName, visibleProjects]);
   const isRefreshing = loadState.status === "loading" && Boolean(data);
   const hasTotalError = loadState.status === "error" && !data;
   const connectionFailed = loadState.status === "error";
@@ -189,12 +227,26 @@ function App() {
     setPage(nextPage);
   };
 
+  const openProject = (projectName: string) => {
+    const url = new URL(window.location.href);
+    url.pathname = `/projects/${encodeURIComponent(projectName)}`;
+    window.history.pushState(null, "", `${url.pathname}${url.search}`);
+    setSelectedProjectName(projectName);
+  };
+
+  const goHome = () => {
+    const url = new URL(window.location.href);
+    url.pathname = "/";
+    window.history.pushState(null, "", `${url.pathname}${url.search}`);
+    setSelectedProjectName(null);
+  };
+
   return (
     <main className="app-shell">
       <div className="ambient-glow ambient-glow-one" />
       <div className="ambient-glow ambient-glow-two" />
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Pages Deploy Tracker home">
+        <a className="brand" href="/" aria-label="Pages Deploy Tracker home" onClick={(event) => { if (selectedProjectName) { event.preventDefault(); goHome(); } }}>
           <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>
           <span><strong>Pages</strong> Deploy Tracker</span>
         </a>
@@ -204,56 +256,23 @@ function App() {
         </div>
       </header>
 
-      <section className="hero" aria-labelledby="page-title">
-        <div>
-          <h1 id="page-title">Deployments</h1>
-        </div>
-        <div className="hero-actions">
-          <button className="refresh-button" type="button" onClick={() => void refresh()} disabled={loadState.status === "loading"} aria-label="Refresh deployment data">
-            <span className={isRefreshing ? "spin" : "refresh-icon"} aria-hidden="true">↻</span>
-            {isRefreshing ? "Refreshing" : "Refresh now"}
-          </button>
-          <label className="poll-control">
-            <span>Refresh every</span>
-            <select value={intervalMs} onChange={(event) => setIntervalMs(Number(event.target.value))} aria-label="Refresh interval">
-              {POLL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-          <button className="pause-button" type="button" onClick={() => setIsPaused((paused) => !paused)} aria-pressed={isPaused}>
-            {isPaused ? "Resume polling" : "Pause polling"}
-          </button>
-        </div>
-      </section>
+      {selectedProjectName && data ? <ProjectDetailPage
+        project={selectedProject}
+        fetchedAt={data.fetchedAt}
+        failureCount={failureCount}
+        isRefreshing={isRefreshing}
+        isPaused={isPaused}
+        intervalMs={intervalMs}
+        onBack={goHome}
+        onRefresh={() => void refresh()}
+        onIntervalChange={setIntervalMs}
+        onPause={() => setIsPaused((paused) => !paused)}
+      /> : !selectedProjectName ? <ProjectIndexPage projects={visibleProjects} data={data} query={query} onSearch={setQuery} loading={loadState.status === "loading"} onProjectClick={openProject} /> : null}
 
-      {loadState.status === "error" && data && <div className="notice notice-warning" role="alert"><span aria-hidden="true">!</span><span>{loadState.message} Showing the last successful result.</span></div>}
+      {loadState.status === "error" && data && !selectedProjectName && <div className="notice notice-warning" role="alert"><span aria-hidden="true">!</span><span>{loadState.message} Showing the last successful result.</span></div>}
 
-      {data && <>
-        <section className="summary-grid" aria-label="Deployment summary">
-          <SummaryCard label="Running" value={data.summary.active} tone="active" />
-          <SummaryCard label="Queued" value={data.summary.queued} tone="queued" />
-          <SummaryCard label="Successful" value={data.summary.success} tone="success" />
-          <SummaryCard label="Failed" value={data.summary.failure} tone="failure" />
-          <SummaryCard label="Canceled" value={data.summary.canceled} tone="canceled" />
-        </section>
-
-        <section className="toolbar" aria-label="Project filters">
-          <div className="toolbar-title"><span className="section-kicker">Projects</span><span className="project-count">{visibleProjects.length} of {data.pagination.totalProjects}</span></div>
-          <div className="filters">
-            <label className="search-field"><span aria-hidden="true">⌕</span><input type="search" placeholder="Search project or branch" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search project or branch" /></label>
-            <label className="filter-field"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)} aria-label="Filter by status">
-              {(["all", "active", "queued", "success", "failure", "canceled"] as StatusFilter[]).map((status) => <option value={status} key={status}>{statusLabels[status]}</option>)}
-            </select></label>
-          </div>
-        </section>
-
+      {data && !selectedProjectName && <>
         {data.warnings.length > 0 && <div className="partial-warning" role="status"><span className="warning-icon" aria-hidden="true">!</span><span>{data.warnings.length} project{data.warnings.length === 1 ? "" : "s"} could not be queried. The rest of the account is still shown.</span></div>}
-
-        {loadState.status === "loading" ? <ProjectLoadingGrid count={data.pagination.perPage} /> : <>
-          <section className="project-list" aria-label="Cloudflare Pages projects">
-            {visibleProjects.map((project) => <ProjectCard key={project.projectId ?? project.projectName} project={project} />)}
-          </section>
-          {visibleProjects.length === 0 && <EmptyState hasProjects={data.projects.length > 0} />}
-        </>}
 
         {data.pagination.totalPages > 1 && <nav className="pagination" aria-label="Project pages">
           <button type="button" onClick={() => changePage(Math.max(1, page - 1))} disabled={page <= 1 || loadState.status === "loading"} aria-label="Previous project page">Previous</button>
@@ -261,7 +280,7 @@ function App() {
           <button type="button" onClick={() => changePage(Math.min(data.pagination.totalPages, page + 1))} disabled={page >= data.pagination.totalPages || loadState.status === "loading"} aria-label="Next project page">Next</button>
         </nav>}
 
-        <footer className="status-footer"><span><span className="footer-dot" />Last successful refresh {formatDate(data.fetchedAt)}</span><span>{isPaused ? "Polling is paused" : failureCount > 0 ? `Polling backed off after ${failureCount} failed refresh${failureCount === 1 ? "" : "es"}` : `Next refresh in ${POLL_OPTIONS.find((option) => option.value === intervalMs)?.label ?? "a moment"}`}</span></footer>
+        {!selectedProjectName && <footer className="status-footer"><span><span className="footer-dot" />Last pulled {formatDate(data.fetchedAt)}</span></footer>}
       </>}
 
       {loadState.status === "loading" && !data && <LoadingState />}
@@ -270,19 +289,45 @@ function App() {
   );
 }
 
-function SummaryCard({ label, value, tone }: { label: string; value: number; tone: string }) {
-  return <div className={`summary-card summary-${tone}`}><div className="summary-card-top"><span className="status-dot" /><span>{label}</span></div><strong>{value}</strong></div>;
+function ProjectIndexPage({ projects, data, loading, query, onSearch, onProjectClick }: { projects: ProjectDeployment[]; data?: DeploymentsResponse; loading: boolean; query: string; onSearch: (value: string) => void; onProjectClick: (projectName: string) => void }) {
+  const [draftQuery, setDraftQuery] = useState(query);
+  const submitSearch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onSearch(draftQuery);
+  };
+  return <section className="index-page" aria-labelledby="page-title">
+    <div className="index-heading"><div><h1 id="page-title">Projects</h1></div>{data && <span className="project-count">{data.pagination.totalProjects} total</span>}</div>
+    {data ? <form className="search-field project-search" onSubmit={submitSearch}><button className="search-submit" type="submit" aria-label="Submit project search">⌕</button><input type="search" placeholder="Search projects or branches" value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} aria-label="Search projects" /></form> : loading ? <div className="search-field project-search project-search-skeleton" aria-label="Loading project search" aria-busy="true"><span /></div> : null}
+    {loading ? data ? <ProjectIndexLoading count={data.pagination.perPage} /> : null : projects.length > 0 ? <div className="project-index-list" aria-label="Cloudflare Pages projects">{projects.map((project) => <ProjectRow key={project.projectId ?? project.projectName} project={project} onClick={onProjectClick} />)}</div> : <EmptyState hasProjects={Boolean(data?.projects.length)} />}
+  </section>;
 }
 
-function ProjectCard({ project }: { project: ProjectDeployment }) {
+function ProjectRow({ project, onClick }: { project: ProjectDeployment; onClick: (projectName: string) => void }) {
+  return <a className="project-row" href={`/projects/${encodeURIComponent(project.projectName)}`} onClick={(event) => { event.preventDefault(); onClick(project.projectName); }}>
+    <span className="project-row-identity"><span className="project-avatar" aria-hidden="true">{project.projectName.slice(0, 1).toUpperCase()}</span><span><strong>{project.projectName}</strong><small>{project.productionBranch ? `⑂ ${project.productionBranch}` : "No production branch configured"}</small></span></span>
+    <span className="project-row-arrow" aria-hidden="true">↗</span>
+  </a>;
+}
+
+function ProjectDetailPage({ project, fetchedAt, failureCount, isRefreshing, isPaused, intervalMs, onBack, onRefresh, onIntervalChange, onPause }: { project?: ProjectDeployment; fetchedAt: string; failureCount: number; isRefreshing: boolean; isPaused: boolean; intervalMs: number; onBack: () => void; onRefresh: () => void; onIntervalChange: (value: number) => void; onPause: () => void }) {
+  if (!project) return <section className="detail-not-found" role="alert"><button className="back-link" type="button" onClick={onBack}>← Back to projects</button><h1>Project not found</h1><p>This project is not present on the current page of results.</p></section>;
+  return <section className="detail-page" aria-labelledby="project-title">
+    <button className="back-link" type="button" onClick={onBack}>← Back to projects</button>
+    <div className="detail-page-header"><div><span className="eyebrow">Project monitor</span><h1 id="project-title">{project.projectName}</h1><p>{project.productionBranch ? `Production branch · ${project.productionBranch}` : "Cloudflare Pages project"}</p></div><div className="detail-actions"><button className="refresh-button" type="button" onClick={onRefresh} disabled={isRefreshing} aria-label="Pull latest deployment data"><span className={isRefreshing ? "spin" : "refresh-icon"} aria-hidden="true">↻</span>{isRefreshing ? "Pulling" : "Pull latest"}</button><label className="poll-control"><span>Every</span><select value={intervalMs} onChange={(event) => onIntervalChange(Number(event.target.value))} aria-label="Refresh interval">{POLL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><button className="pause-button" type="button" onClick={onPause} aria-pressed={isPaused}>{isPaused ? "Resume" : "Pause"}</button></div></div>
+    {project.error && <div className="project-error" role="status"><span aria-hidden="true">!</span><div><strong>{project.error.message}</strong>{project.error.details && <pre className="error-details">{JSON.stringify(project.error.details, null, 2)}</pre>}</div></div>}
+    <ProjectMonitor project={project} />
+    <footer className="monitoring-footer"><span><span className={`monitoring-dot ${isPaused ? "paused" : ""}`} />{isPaused ? "Monitoring paused" : "Monitoring live"}</span><span>Last pulled {formatDate(fetchedAt)} · {isPaused ? "Manual pulls only" : failureCount > 0 ? "Retrying with backoff" : `Next pull in ${POLL_OPTIONS.find((option) => option.value === intervalMs)?.label ?? "a moment"}`}</span></footer>
+  </section>;
+}
+
+function ProjectMonitor({ project }: { project: ProjectDeployment }) {
   const current = project.deployments[0];
   const projectUrl = current?.url ?? (project.subdomain ? `https://${project.subdomain}.pages.dev` : undefined);
-  return <article className={`project-card ${current ? `card-${current.status}` : "card-empty"}`}>
+  return <article className={`project-monitor ${current ? `card-${current.status}` : "card-empty"}`}>
     <div className="project-card-header">
       <div className="project-heading"><div className="project-avatar" aria-hidden="true">{project.projectName.slice(0, 1).toUpperCase()}</div><div><h2>{project.projectName}</h2><div className="project-subline">{project.productionBranch ? <><span className="branch-icon" aria-hidden="true">⑂</span>{project.productionBranch}</> : "No production branch configured"}</div></div></div>
       {current ? <StatusBadge status={current.status} /> : <span className="status-badge status-unknown">No deployments</span>}
     </div>
-    {project.error && <div className="project-error" role="status"><span aria-hidden="true">!</span>{project.error.message}</div>}
     {current ? <>
       <div className="deployment-hero"><div><span className="deployment-label">Current stage</span><div className="deployment-state"><span className="stage-name">{current.stage.replaceAll("_", " ")}</span></div></div><span className="environment-tag">{current.environment}</span></div>
       <div className="detail-grid"><Detail label="Branch" value={current.branch ?? project.productionBranch ?? "—"} /><Detail label="Commit" value={shortCommit(current.commitHash)} mono /><Detail label="Started" value={formatDate(current.stageStartedAt ?? current.createdAt)} /><Detail label="Duration" value={current.status === "active" ? formatDuration(current) : current.stageEndedAt ? formatDuration(current) : "—"} /></div>
@@ -295,9 +340,8 @@ function ProjectCard({ project }: { project: ProjectDeployment }) {
 function StatusBadge({ status }: { status: string }) { return <span className={`status-badge status-${status}`}><span className="status-dot" />{statusLabels[status as StatusFilter] ?? "Unknown"}</span>; }
 function Detail({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="detail"><span>{label}</span><strong className={mono ? "mono" : ""}>{value}</strong></div>; }
 function EmptyState({ hasProjects }: { hasProjects: boolean }) { return <div className="empty-state"><div className="empty-orbit" aria-hidden="true">✦</div><h2>{hasProjects ? "No projects match these filters" : "No Pages projects found"}</h2><p>{hasProjects ? "Try a different status or search term." : "The connected Cloudflare account does not have any Pages projects available to this token."}</p></div>; }
-function ProjectLoadingGrid({ count }: { count: number }) { return <section className="project-list project-list-loading" aria-label="Loading projects" aria-busy="true">{Array.from({ length: count }, (_, index) => <ProjectSkeleton key={index} />)}</section>; }
-function ProjectSkeleton() { return <article className="project-card project-card-skeleton" data-testid="project-skeleton" aria-hidden="true"><div className="skeleton-project-header"><span className="skeleton-block skeleton-avatar" /><span className="skeleton-block skeleton-project-name" /><span className="skeleton-block skeleton-status" /></div><div className="skeleton-stage"><span className="skeleton-block skeleton-label" /><span className="skeleton-block skeleton-stage-name" /></div><div className="skeleton-details"><span className="skeleton-block" /><span className="skeleton-block" /><span className="skeleton-block" /><span className="skeleton-block" /></div><div className="skeleton-project-footer"><span className="skeleton-block" /><span className="skeleton-block" /></div></article>; }
-function LoadingState() { return <section className="loading-list" aria-label="Loading projects" aria-busy="true"><div className="loading-summary">Loading your Pages projects…</div><ProjectLoadingGrid count={10} /></section>; }
-function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) { return <section className="error-state" role="alert"><div className="error-mark" aria-hidden="true">×</div><h2>Couldn’t load deployment data</h2><p>{message}</p><button className="refresh-button" type="button" onClick={onRetry}>Try again</button></section>; }
+function ProjectIndexLoading({ count }: { count: number }) { return <div className="project-index-list project-index-loading" aria-label="Loading projects" aria-busy="true">{Array.from({ length: count }, (_, index) => <div className="project-row-skeleton" data-testid="project-skeleton" key={index}><span /><span /><span /></div>)}</div>; }
+function LoadingState() { return <section className="loading-list" aria-label="Loading projects" aria-busy="true"><div className="loading-summary">Pulling your Pages projects…</div><ProjectIndexLoading count={10} /></section>; }
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) { return <section className="error-state" role="alert"><div className="error-mark" aria-hidden="true">×</div><h2>Couldn’t load deployment data</h2><pre className="error-details">{message}</pre><button className="refresh-button" type="button" onClick={onRetry}>Try again</button></section>; }
 
 export default App;

@@ -7,6 +7,26 @@ export interface ApiWarning {
   message: string;
   projectName?: string;
   status?: number;
+  details?: ApiErrorDetails;
+}
+
+export interface ApiErrorDetails {
+  requestId?: string;
+  operation?: string;
+  endpoint?: string;
+  method?: string;
+  projectName?: string;
+  status?: number;
+  attempt?: number;
+  maxAttempts?: number;
+  retryable?: boolean;
+  elapsedMs?: number;
+  nextRetryMs?: number;
+  responseContentType?: string;
+  responseBody?: string;
+  cfRay?: string;
+  retryAfter?: string;
+  cause?: string;
 }
 
 export interface DeploymentSummary {

@@ -16,7 +16,8 @@ describe("deployment collection", () => {
       return Promise.resolve(response({ errors: [{ message: "project unavailable" }], success: false }, 404));
     });
 
-    const result = await collectDeployments("account-id", "secret-token", { fetcher, page: 2, sleep: vi.fn().mockResolvedValue(undefined) });
+    const logger = vi.fn();
+    const result = await collectDeployments("account-id", "secret-token", { fetcher, page: 2, sleep: vi.fn().mockResolvedValue(undefined), requestId: "req-2", logger });
 
     expect(result.projects.map((project) => project.projectName)).toEqual(["healthy", "unavailable"]);
     expect(result.projects[0].deployments[0].status).toBe("success");
@@ -26,5 +27,6 @@ describe("deployment collection", () => {
     expect(result.summary.totalProjects).toBe(39);
     expect(fetcher.mock.calls.some(([input]) => String(input).includes("/unavailable/deployments"))).toBe(true);
     expect(JSON.stringify(result)).not.toContain("secret-token");
+    expect(logger).toHaveBeenCalledWith("project_deployments_error", expect.objectContaining({ requestId: "req-2", projectName: "unavailable", status: 404, responseBody: expect.stringContaining("project unavailable") }));
   });
 });
