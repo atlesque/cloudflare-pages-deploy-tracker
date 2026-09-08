@@ -70,7 +70,7 @@ h1 { margin: 0; color: var(--ink); font-size: clamp(38px, 5vw, 56px); line-heigh
 .project-row-identity > span:last-child { display: grid; gap: 5px; min-width: 0; }
 .project-row strong { overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 700; letter-spacing: -.035em; text-overflow: ellipsis; white-space: nowrap; }
 .project-row small { overflow: hidden; color: var(--muted); font: 10px "DM Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
-.project-row-actions { display: flex; align-items: center; justify-content: end; gap: 10px; min-width: 0; }
+.project-row-actions { display: flex; align-items: center; justify-content: end; gap: 16px; min-width: 0; }
 .project-row-status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid rgba(88, 194, 166, .34); border-radius: 999px; background: rgba(88, 194, 166, .1); color: #79d6bb; font: 500 9px "DM Mono", monospace; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; box-shadow: 0 0 14px rgba(88, 194, 166, .14); animation: deployment-glow 2.2s ease-in-out infinite; }
 .project-row-status-dot { width: 6px; height: 6px; border-radius: 50%; background: #70d5b8; box-shadow: 0 0 0 3px rgba(88, 194, 166, .13), 0 0 10px rgba(88, 194, 166, .72); }
 .project-row-arrow { color: var(--accent); font-size: 17px; text-align: right; transition: transform .18s; } .project-row:hover .project-row-arrow { transform: translate(2px, -2px); }
