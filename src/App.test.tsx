@@ -37,6 +37,9 @@ describe("dashboard", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(data), { status: 200 })));
     render(<App />);
     expect(await screen.findByText("checkout")).toBeInTheDocument();
+    expect(screen.getByLabelText("checkout is currently deploying")).toBeInTheDocument();
+    expect(screen.getByText("Deploying")).toBeInTheDocument();
+    expect(screen.queryByLabelText("marketing is currently deploying")).not.toBeInTheDocument();
     expect(screen.queryByText("Running")).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Filter by status" })).not.toBeInTheDocument();
     expect(screen.getByText("39 total")).toBeInTheDocument();

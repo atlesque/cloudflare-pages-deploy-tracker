@@ -303,9 +303,13 @@ function ProjectIndexPage({ projects, data, loading, query, onSearch, onProjectC
 }
 
 function ProjectRow({ project, onClick }: { project: ProjectDeployment; onClick: (projectName: string) => void }) {
+  const isDeploying = project.deployments[0]?.status === "active";
   return <a className="project-row" href={`/projects/${encodeURIComponent(project.projectName)}`} onClick={(event) => { event.preventDefault(); onClick(project.projectName); }}>
     <span className="project-row-identity"><span className="project-avatar" aria-hidden="true">{project.projectName.slice(0, 1).toUpperCase()}</span><span><strong>{project.projectName}</strong><small>{project.productionBranch ? `⑂ ${project.productionBranch}` : "No production branch configured"}</small></span></span>
-    <span className="project-row-arrow" aria-hidden="true">↗</span>
+    <span className="project-row-actions">
+      {isDeploying && <span className="project-row-status" aria-label={`${project.projectName} is currently deploying`}><span className="project-row-status-dot" aria-hidden="true" />Deploying</span>}
+      <span className="project-row-arrow" aria-hidden="true">↗</span>
+    </span>
   </a>;
 }
 
