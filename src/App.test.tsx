@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -21,6 +21,7 @@ const data: DeploymentsResponse = {
 describe("dashboard", () => {
   beforeEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
   localStorage.clear();
   window.history.replaceState(null, "", "/");
   });
@@ -58,8 +59,52 @@ describe("dashboard", () => {
     await user.click(screen.getByRole("button", { name: "Submit project search" }));
     expect(screen.getByText("marketing")).toBeInTheDocument();
     expect(screen.queryByText("checkout")).not.toBeInTheDocument();
-    expect(timerSpy.mock.calls.some(([, delay]) => typeof delay === "number" && delay >= 10_000)).toBe(false);
+    expect(timerSpy.mock.calls.some(([, delay]) => delay === 10_000)).toBe(true);
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes the homepage in the background without showing skeletons", async () => {
+    vi.useFakeTimers();
+    let resolveBackground!: (response: Response) => void;
+    const backgroundResponse = new Promise<Response>((resolve) => { resolveBackground = resolve; });
+    const refreshedData: DeploymentsResponse = {
+      ...data,
+      fetchedAt: "2026-09-02T10:12:00.000Z",
+      projects: data.projects.map((project) => project.projectName === "checkout"
+        ? { ...project, deployments: [{ ...project.deployments[0], status: "success" }] }
+        : project),
+    };
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(data), { status: 200 })).mockReturnValueOnce(backgroundResponse);
+    vi.stubGlobal("fetch", fetcher);
+    render(<App />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getByText("checkout")).toBeInTheDocument();
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("status", { name: "Refreshing projects" })).toBeInTheDocument();
+    expect(screen.queryByTestId("project-skeleton")).not.toBeInTheDocument();
+    resolveBackground(new Response(JSON.stringify(refreshedData), { status: 200 }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.queryByLabelText("checkout is currently deploying")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Refreshing projects" })).not.toBeInTheDocument();
+  });
+
+  it("cancels a homepage refresh when opening a project", async () => {
+    vi.useFakeTimers();
+    let resolveBackground!: (response: Response) => void;
+    const backgroundResponse = new Promise<Response>((resolve) => { resolveBackground = resolve; });
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(data), { status: 200 })).mockReturnValueOnce(backgroundResponse);
+    vi.stubGlobal("fetch", fetcher);
+    render(<App />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    const requestInit = fetcher.mock.calls[1]?.[1] as RequestInit;
+    expect(requestInit.signal?.aborted).toBe(false);
+    fireEvent.click(screen.getByRole("link", { name: /checkout/ }));
+    expect(requestInit.signal?.aborted).toBe(true);
+    expect(screen.getByRole("heading", { name: "checkout", level: 1 })).toBeInTheDocument();
+    resolveBackground(new Response(JSON.stringify(data), { status: 200 }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
   });
 
   it("opens a project monitor with pull and polling controls", async () => {
@@ -139,5 +184,19 @@ describe("dashboard", () => {
     expect(themeButton).toHaveAttribute("aria-label", "Theme mode: light. Switch to auto");
     await user.click(themeButton);
     expect(themeButton).toHaveAttribute("aria-label", "Theme mode: auto. Switch to dark");
+  });
+
+  it("turns the sticky top bar into glass when scrolling", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(data), { status: 200 })));
+    render(<App />);
+    await screen.findByText("checkout");
+    const topbar = document.querySelector(".topbar");
+    expect(topbar).not.toHaveClass("topbar-scrolled");
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 32 });
+    fireEvent.scroll(window);
+    expect(topbar).toHaveClass("topbar-scrolled");
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
+    fireEvent.scroll(window);
+    expect(topbar).not.toHaveClass("topbar-scrolled");
   });
 });

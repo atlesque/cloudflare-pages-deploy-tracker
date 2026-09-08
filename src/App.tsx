@@ -54,6 +54,15 @@ const responsePreview = (body: string): string => {
   return trimmed.length > 1_000 ? `${trimmed.slice(0, 1_000)}…` : trimmed;
 };
 
+const mergeProjectStatuses = (previous: DeploymentsResponse, next: DeploymentsResponse): DeploymentsResponse => ({
+  ...next,
+  projects: previous.projects.map((project) => {
+    const refreshedProject = next.projects.find((candidate) => candidate.projectName === project.projectName);
+    if (!refreshedProject || refreshedProject.deployments[0]?.status === project.deployments[0]?.status) return project;
+    return { ...project, deployments: refreshedProject.deployments, error: refreshedProject.error };
+  }),
+});
+
 const statusLabels: Record<StatusFilter, string> = {
   all: "All statuses",
   active: "Active",
@@ -131,9 +140,13 @@ function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
   const [systemTheme, setSystemTheme] = useState<"dark" | "light">(readSystemTheme);
   const inFlight = useRef(false);
+  const backgroundInFlight = useRef(false);
   const mounted = useRef(true);
   const abortController = useRef<AbortController | null>(null);
+  const backgroundAbortController = useRef<AbortController | null>(null);
   const loadStateRef = useRef(loadState);
+  const [isBackgroundRefreshing, setIsBackgroundRefreshing] = useState(false);
+  const [isTopbarScrolled, setIsTopbarScrolled] = useState(false);
   loadStateRef.current = loadState;
 
   useEffect(() => {
@@ -148,6 +161,13 @@ function App() {
     const onPopState = () => setSelectedProjectName(readSelectedProject());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    const onScroll = () => setIsTopbarScrolled(window.scrollY > 8);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
   useEffect(() => {
@@ -204,6 +224,44 @@ function App() {
   }, [failureCount, hasData, intervalMs, isPaused, loadState.status, refresh, selectedProjectName]);
 
   const data = loadState.status === "success" ? loadState.data : loadState.status === "error" ? loadState.previous : loadState.status === "loading" ? loadState.previous : undefined;
+
+  const backgroundRefresh = useCallback(async (requestedPage = page) => {
+    if (backgroundInFlight.current || !mounted.current) return;
+    backgroundInFlight.current = true;
+    const controller = new AbortController();
+    backgroundAbortController.current = controller;
+    setIsBackgroundRefreshing(true);
+    try {
+      const refreshedData = await getDeployments(controller.signal, requestedPage);
+      if (!mounted.current || controller.signal.aborted) return;
+      const current = loadStateRef.current;
+      const previous = current.status === "success" ? current.data : current.previous;
+      const mergedData = previous ? mergeProjectStatuses(previous, refreshedData) : refreshedData;
+      setFailureCount(0);
+      setLoadState({ status: "success", data: mergedData });
+    } catch (error) {
+      if (!mounted.current || (error instanceof Error && error.name === "AbortError")) return;
+      const current = loadStateRef.current;
+      const previous = current.status === "success" ? current.data : current.previous;
+      console.error("[pages-deploy-tracker] browser_background_refresh_error", JSON.stringify({ endpoint: `/api/deployments?page=${requestedPage}`, method: "GET", page: requestedPage, error: error instanceof Error ? error.message : String(error) }));
+      setFailureCount((count) => count + 1);
+      setLoadState({ status: "error", message: error instanceof Error ? error.message : "The deployment service could not be reached.", previous });
+    } finally {
+      backgroundInFlight.current = false;
+      if (backgroundAbortController.current === controller) backgroundAbortController.current = null;
+      if (mounted.current) setIsBackgroundRefreshing(false);
+    }
+  }, [page]);
+
+  useEffect(() => {
+    if (selectedProjectName || !data || loadState.status === "loading") return;
+    const timer = window.setTimeout(() => void backgroundRefresh(), 10_000);
+    return () => {
+      window.clearTimeout(timer);
+      backgroundAbortController.current?.abort();
+    };
+  }, [backgroundRefresh, data, loadState.status, page, selectedProjectName]);
+
   const visibleProjects = useMemo(() => data ? filterProjects(data.projects, "all", query) : [], [data, query]);
   const selectedProject = useMemo(() => visibleProjects.find((project) => project.projectName === selectedProjectName), [selectedProjectName, visibleProjects]);
   const isRefreshing = loadState.status === "loading" && Boolean(data);
@@ -245,13 +303,16 @@ function App() {
     <main className="app-shell">
       <div className="ambient-glow ambient-glow-one" />
       <div className="ambient-glow ambient-glow-two" />
-      <header className="topbar">
+      <header className={`topbar ${isTopbarScrolled ? "topbar-scrolled" : ""}`}>
         <a className="brand" href="/" aria-label="Pages Deploy Tracker home" onClick={(event) => { if (selectedProjectName) { event.preventDefault(); goHome(); } }}>
           <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>
           <span><strong>Pages</strong> Deploy Tracker</span>
         </a>
         <div className="topbar-meta">
-          <span className={`connection-state ${connectionFailed ? "error" : ""}`}><span className="connection-dot" />{connectionFailed ? "ERROR" : "LIVE"}</span>
+          <span className="live-status">
+            {isBackgroundRefreshing && <span className="background-refresh-indicator" role="status" aria-label="Refreshing projects" title="Refreshing projects"><span className="background-refresh-spinner" aria-hidden="true"><span /><span /></span></span>}
+            <span className={`connection-state ${connectionFailed ? "error" : ""}`}><span className="connection-dot" />{connectionFailed ? "ERROR" : "LIVE"}</span>
+          </span>
           <button className="theme-toggle" type="button" onClick={() => setThemeMode((mode) => nextThemeMode[mode])} aria-label={`Theme mode: ${themeMode}. Switch to ${nextThemeMode[themeMode]}`} title={`Theme: ${themeMode}`}><span aria-hidden="true">{themeIcon[themeMode]}</span></button>
         </div>
       </header>
