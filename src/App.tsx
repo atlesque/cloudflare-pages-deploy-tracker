@@ -366,7 +366,7 @@ function ProjectIndexPage({ projects, data, loading, query, onSearch, onProjectC
 function ProjectRow({ project, onClick }: { project: ProjectDeployment; onClick: (projectName: string) => void }) {
   const isDeploying = project.deployments[0]?.status === "active";
   return <a className="project-row" href={`/projects/${encodeURIComponent(project.projectName)}`} onClick={(event) => { event.preventDefault(); onClick(project.projectName); }}>
-    <span className="project-row-identity"><span className="project-avatar" aria-hidden="true">{project.projectName.slice(0, 1).toUpperCase()}</span><span><strong>{project.projectName}</strong><small>{project.productionBranch ? `⑂ ${project.productionBranch}` : "No production branch configured"}</small></span></span>
+    <span className="project-row-identity"><span className="project-avatar" aria-hidden="true">{project.projectName.slice(0, 1).toUpperCase()}</span><span><strong>{project.projectName}</strong><small>{project.productionBranch ? `⑂ ${project.productionBranch}` : "No production branch configured"}{project.deployments[0] && <span className="last-deployed">· Last deployed {formatDate(project.deployments[0].modifiedAt ?? project.deployments[0].createdAt)}</span>}</small></span></span>
     <span className="project-row-actions">
       {isDeploying && <span className="project-row-status" aria-label={`${project.projectName} is currently deploying`}><span className="project-row-status-dot" aria-hidden="true" />Deploying</span>}
       <span className="project-row-arrow" aria-hidden="true">↗</span>
@@ -389,8 +389,8 @@ function ProjectMonitor({ project }: { project: ProjectDeployment }) {
   const current = project.deployments[0];
   const projectUrl = current?.url ?? (project.subdomain ? `https://${project.subdomain}.pages.dev` : undefined);
   return <article className={`project-monitor ${current ? `card-${current.status}` : "card-empty"}`}>
-    <div className="project-card-header">
-      <div className="project-heading"><div className="project-avatar" aria-hidden="true">{project.projectName.slice(0, 1).toUpperCase()}</div><div><h2>{project.projectName}</h2><div className="project-subline">{project.productionBranch ? <><span className="branch-icon" aria-hidden="true">⑂</span>{project.productionBranch}</> : "No production branch configured"}</div></div></div>
+      <div className="project-card-header">
+      <div className="project-heading"><div className="project-avatar" aria-hidden="true">{project.projectName.slice(0, 1).toUpperCase()}</div><div><h2>{project.projectName}</h2><div className="project-subline">{project.productionBranch ? <><span className="branch-icon" aria-hidden="true">⑂</span>{project.productionBranch}</> : "No production branch configured"}{current && <span className="last-deployed">· Last deployed {formatDate(current.modifiedAt ?? current.createdAt)}</span>}</div></div></div>
       {current ? <StatusBadge status={current.status} /> : <span className="status-badge status-unknown">No deployments</span>}
     </div>
     {current ? <>
