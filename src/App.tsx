@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { filterProjects } from "../shared/normalize";
+import { filterProjects, sortProjects } from "../shared/normalize";
 import type { ApiWarning, DeploymentSummary, DeploymentsResponse, ProjectDeployment, StatusFilter } from "../shared/types";
 
 const POLL_OPTIONS = [
@@ -54,13 +54,12 @@ const responsePreview = (body: string): string => {
   return trimmed.length > 1_000 ? `${trimmed.slice(0, 1_000)}…` : trimmed;
 };
 
-const mergeProjectStatuses = (previous: DeploymentsResponse, next: DeploymentsResponse): DeploymentsResponse => ({
+const mergeProjectData = (previous: DeploymentsResponse, next: DeploymentsResponse): DeploymentsResponse => ({
   ...next,
-  projects: previous.projects.map((project) => {
-    const refreshedProject = next.projects.find((candidate) => candidate.projectName === project.projectName);
-    if (!refreshedProject || refreshedProject.deployments[0]?.status === project.deployments[0]?.status) return project;
-    return { ...project, deployments: refreshedProject.deployments, error: refreshedProject.error };
-  }),
+  projects: sortProjects(next.projects.map((refreshedProject) => {
+    const previousProject = previous.projects.find((project) => project.projectName === refreshedProject.projectName);
+    return previousProject ? { ...previousProject, deployments: refreshedProject.deployments, error: refreshedProject.error } : refreshedProject;
+  })),
 });
 
 const statusLabels: Record<StatusFilter, string> = {
@@ -236,7 +235,7 @@ function App() {
       if (!mounted.current || controller.signal.aborted) return;
       const current = loadStateRef.current;
       const previous = current.status === "success" ? current.data : current.previous;
-      const mergedData = previous ? mergeProjectStatuses(previous, refreshedData) : refreshedData;
+      const mergedData = previous ? mergeProjectData(previous, refreshedData) : refreshedData;
       setFailureCount(0);
       setLoadState({ status: "success", data: mergedData });
     } catch (error) {

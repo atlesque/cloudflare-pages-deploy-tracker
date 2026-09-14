@@ -89,6 +89,37 @@ describe("dashboard", () => {
     expect(screen.queryByRole("status", { name: "Refreshing projects" })).not.toBeInTheDocument();
   });
 
+  it("resorts the homepage when a refreshed deployment becomes active", async () => {
+    vi.useFakeTimers();
+    const refreshedData: DeploymentsResponse = {
+      ...data,
+      fetchedAt: "2026-09-02T10:12:00.000Z",
+      projects: data.projects.map((project) => project.projectName === "marketing"
+        ? { ...project, deployments: [{ ...project.deployments[0], status: "active", modifiedAt: "2026-09-02T10:11:00Z" }] }
+        : project),
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...data, projects: [data.projects[0], data.projects[1]] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...refreshedData, projects: [refreshedData.projects[1], refreshedData.projects[0]] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    render(<App />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getAllByRole("link").filter((link) => link.className === "project-row").map((link) => link.textContent)).toEqual([
+      expect.stringContaining("checkout"),
+      expect.stringContaining("marketing"),
+    ]);
+
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getAllByRole("link").filter((link) => link.className === "project-row").map((link) => link.textContent)).toEqual([
+      expect.stringContaining("marketing"),
+      expect.stringContaining("checkout"),
+    ]);
+    expect(screen.getByLabelText("marketing is currently deploying")).toBeInTheDocument();
+    const expectedLastDeployed = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date("2026-09-02T10:11:00Z"));
+    expect(screen.getByRole("link", { name: /marketing/ })).toHaveTextContent(`Last deployed ${expectedLastDeployed}`);
+  });
+
   it("cancels a homepage refresh when opening a project", async () => {
     vi.useFakeTimers();
     let resolveBackground!: (response: Response) => void;
