@@ -126,7 +126,7 @@ export function sortProjects(projects: ProjectDeployment[]): ProjectDeployment[]
     if (!leftDeployment && !rightDeployment) return left.projectName.localeCompare(right.projectName);
     if (!leftDeployment) return 1;
     if (!rightDeployment) return -1;
-    return (statusPriority[leftDeployment.status] - statusPriority[rightDeployment.status]) || (timestamp(rightDeployment) - timestamp(leftDeployment));
+    return (timestamp(rightDeployment) - timestamp(leftDeployment)) || (statusPriority[leftDeployment.status] - statusPriority[rightDeployment.status]);
   });
 }
 

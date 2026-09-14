@@ -62,9 +62,9 @@ describe("project summaries", () => {
     expect(calculateSummary(projects)).toEqual({ totalProjects: 3, active: 1, queued: 0, success: 1, failure: 1, canceled: 0 });
   });
 
-  it("prioritizes active, queued, failed, then recent projects", () => {
+  it("sorts projects by most recent deployment before status", () => {
     const projects = [project("done", "success", "2026-09-02T12:00:00Z"), project("failed", "failure", "2026-09-02T08:00:00Z"), project("active", "active", "2026-09-02T07:00:00Z"), { projectName: "empty", domains: [], deployments: [] }];
-    expect(sortProjects(projects).map(({ projectName }) => projectName)).toEqual(["active", "failed", "done", "empty"]);
+    expect(sortProjects(projects).map(({ projectName }) => projectName)).toEqual(["done", "failed", "active", "empty"]);
   });
 
   it("filters by current status and project or branch text", () => {
