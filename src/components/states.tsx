@@ -1,0 +1,5 @@
+import { ProjectIndexLoading } from "./ProjectIndexPage";
+
+export function EmptyState({ hasProjects }: { hasProjects: boolean }) { return <div className="empty-state"><div className="empty-orbit" aria-hidden="true">✦</div><h2>{hasProjects ? "No projects match these filters" : "No Pages projects found"}</h2><p>{hasProjects ? "Try a different status or search term." : "The connected Cloudflare account does not have any Pages projects available to this token."}</p></div>; }
+export function LoadingState() { return <section className="loading-list" aria-label="Loading projects" aria-busy="true"><div className="loading-summary">Pulling your Pages projects…</div><ProjectIndexLoading count={10} /></section>; }
+export function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) { return <section className="error-state" role="alert"><div className="error-mark" aria-hidden="true">×</div><h2>Couldn’t load deployment data</h2><pre className="error-details">{message}</pre><button className="refresh-button" type="button" onClick={onRetry}>Try again</button></section>; }
