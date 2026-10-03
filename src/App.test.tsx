@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -71,7 +71,7 @@ describe("dashboard", () => {
       ...data,
       fetchedAt: "2026-09-02T10:12:00.000Z",
       projects: data.projects.map((project) => project.projectName === "checkout"
-        ? { ...project, deployments: [{ ...project.deployments[0], status: "success" }] }
+        ? { ...project, domains: ["checkout.example.com"], deployments: [{ ...project.deployments[0], status: "success" }] }
         : project),
     };
     const fetcher = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(data), { status: 200 })).mockReturnValueOnce(backgroundResponse);
@@ -87,6 +87,8 @@ describe("dashboard", () => {
     await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
     expect(screen.queryByLabelText("checkout is currently deploying")).not.toBeInTheDocument();
     expect(screen.queryByRole("status", { name: "Refreshing projects" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: /checkout/ }));
+    expect(screen.getByRole("link", { name: "checkout.example.com" })).toHaveAttribute("href", "https://checkout.example.com");
   });
 
   it("resorts the homepage when a refreshed deployment becomes active", async () => {
@@ -150,6 +152,40 @@ describe("dashboard", () => {
     expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
     expect(screen.getByText("Monitoring paused")).toBeInTheDocument();
     expect(window.location.pathname).toBe("/projects/checkout");
+  });
+
+  it("lists the selected project's custom domains even without deployments", async () => {
+    const user = userEvent.setup();
+    const projectData: DeploymentsResponse = {
+      ...data,
+      projects: data.projects.map((project) => project.projectName === "checkout"
+        ? { ...project, domains: ["checkout.pages.dev", "checkout.example.com", "shop.example.com"], deployments: [] }
+        : { ...project, domains: ["other.example.com"] }),
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(projectData), { status: 200 })));
+    render(<App />);
+    await user.click(await screen.findByRole("link", { name: /checkout/ }));
+    const domains = screen.getByRole("region", { name: "Custom domains" });
+    expect(within(domains).getAllByRole("listitem")).toHaveLength(2);
+    for (const domain of ["checkout.example.com", "shop.example.com"]) {
+      const link = within(domains).getByRole("link", { name: domain });
+      expect(link).toHaveAttribute("href", `https://${domain}`);
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noreferrer");
+    }
+    expect(screen.queryByText("other.example.com")).not.toBeInTheDocument();
+    expect(within(domains).queryByRole("link", { name: "checkout.pages.dev" })).not.toBeInTheDocument();
+    expect(screen.getByText("No deployments recorded yet")).toBeInTheDocument();
+  });
+
+  it.each([{ domains: [] }, { domains: ["checkout.pages.dev"] }])("shows an empty state for projects without custom domains (%j)", async ({ domains: projectDomains }) => {
+    window.history.replaceState(null, "", "/projects/checkout");
+    const projectData = { ...data, projects: [{ ...data.projects[0], domains: projectDomains }] };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(projectData), { status: 200 })));
+    render(<App />);
+    const domains = await screen.findByRole("region", { name: "Custom domains" });
+    expect(within(domains).getByText("No custom domains configured.")).toBeInTheDocument();
+    expect(within(domains).queryByRole("list")).not.toBeInTheDocument();
   });
 
   it("shows ERROR when the deployment connection fails", async () => {
