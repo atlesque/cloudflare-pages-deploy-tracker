@@ -1,6 +1,6 @@
 # Cloudflare Pages Deploy Tracker
 
-A read-only React dashboard for the latest Cloudflare Pages deployment state across one account. The browser talks to `/api/deployments`; the Pages Function keeps the Cloudflare API token server-side and returns only normalized dashboard fields.
+A read-only React dashboard for the latest Cloudflare Pages deployment state, and Workers Builds state for Workers connected to Git, across one account. The browser talks to `/api/deployments`; the Pages Function keeps the Cloudflare API token server-side and returns only normalized dashboard fields.
 
 ## Local setup
 
@@ -11,7 +11,7 @@ pnpm install
 cp .env.example .env
 ```
 
-Fill `.env` with the two values shown in `.env.example`. The API token must have the Cloudflare `Pages Read` permission for that account. `.env` is ignored and must never be committed. Wrangler also supports the existing `.dev.vars` file for local overrides.
+Fill `.env` with the two values shown in `.env.example`. The API token must have the Cloudflare `Pages Read` permission for that account. To also show Workers, add `Workers Scripts Read` and `Workers Builds Configuration Read`; Cloudflare documents that the Workers Builds API only accepts user-scoped API tokens. Without those permissions the dashboard still shows Pages projects and reports a warning for Workers. `.env` is ignored and must never be committed. Wrangler also supports the existing `.dev.vars` file for local overrides.
 
 To open this repository and its local environment file in VS Code:
 
@@ -48,11 +48,11 @@ pnpm wrangler secret put CLOUDFLARE_ACCOUNT_ID
 pnpm wrangler secret put CLOUDFLARE_API_TOKEN
 ```
 
-The API token should be narrowly scoped to the target account with `Pages Read`. Rotate it by creating a replacement token, updating the secret, verifying the dashboard, and then revoking the old token. Protect the deployed dashboard with Cloudflare Access or an equivalent private access layer before sharing its URL.
+The API token should be narrowly scoped to the target account with `Pages Read`, plus `Workers Scripts Read` and `Workers Builds Configuration Read` for Workers. Rotate it by creating a replacement token, updating the secret, verifying the dashboard, and then revoking the old token. Protect the deployed dashboard with Cloudflare Access or an equivalent private access layer before sharing its URL.
 
 ## API behavior
 
-`GET /api/deployments?page=1` returns one page of 10 accessible Pages projects, includes the account-wide project total and page metadata, and fetches a recent deployment page for each project with a concurrency limit of six. Transient 429 and 5xx responses retry with bounded exponential backoff; authentication, authorization, validation, and not-found errors do not retry. A failed project becomes a project-level warning while other projects remain visible. Failed requests include a request ID, redacted endpoint, HTTP status, response content type/body preview, retry metadata, and elapsed time in both the server log and API warning.
+`GET /api/deployments?page=1` lists every Pages project and Worker script in the account, orders them by most recent activity, and returns one page of 10 with the account-wide total and page metadata. Only the entries on that page get history: a recent deployment page for each Pages project, and a recent Workers Builds page (commit, branch, status) for each Worker, with a concurrency limit of six. Workers appear on their own `/workers/<name>` route. A Worker that is not connected to Workers Builds is listed without builds. Transient 429 and 5xx responses retry with bounded exponential backoff; authentication, authorization, validation, and not-found errors do not retry. A failed project becomes a project-level warning while other projects remain visible. Failed requests include a request ID, redacted endpoint, HTTP status, response content type/body preview, retry metadata, and elapsed time in both the server log and API warning.
 
 The endpoint does not trigger, cancel, retry, delete, or modify deployments. No D1, KV, R2, or other persistence is used in v1. The client keeps its latest successful result in memory and polls every 10 seconds by default, with pause, manual refresh, and interval controls on each project detail page.
 

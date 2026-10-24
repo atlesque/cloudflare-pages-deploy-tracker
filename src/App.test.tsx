@@ -154,6 +154,32 @@ describe("dashboard", () => {
     expect(window.location.pathname).toBe("/projects/checkout");
   });
 
+  it("lists Workers next to Pages projects and opens their build monitor", async () => {
+    const user = userEvent.setup();
+    const workerData: DeploymentsResponse = {
+      ...data,
+      projects: [
+        { kind: "worker", projectName: "checkout", projectId: "tag-1", productionBranch: "main", domains: ["names.example.com"], dashboardUrl: "https://dash.cloudflare.com/account/workers/services/view/checkout/production/deployments", deployments: [
+          { id: "build-2", projectName: "checkout", environment: "production", status: "success", stage: "success", stageStartedAt: "2026-10-24T20:38:00Z", stageEndedAt: "2026-10-24T20:39:00Z", modifiedAt: "2026-10-24T20:39:00Z", branch: "main", commitHash: "bbb2223334", commitMessage: "Merge pull request #4", aliases: [] },
+          { id: "build-1", projectName: "checkout", environment: "production", status: "failure", stage: "fail", modifiedAt: "2026-10-24T18:00:00Z", branch: "main", commitHash: "aaa1112223", aliases: [] },
+        ] },
+        ...data.projects,
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(workerData), { status: 200 })));
+    render(<App />);
+    const workerLink = (await screen.findAllByRole("link", { name: /checkout/ })).find((link) => link.getAttribute("href") === "/workers/checkout");
+    expect(workerLink).toBeDefined();
+    expect(within(workerLink!).getByText("Worker")).toBeInTheDocument();
+    await user.click(workerLink!);
+    expect(window.location.pathname).toBe("/workers/checkout");
+    expect(await screen.findByText("Worker · Production branch · main")).toBeInTheDocument();
+    expect(screen.getByText("bbb22233")).toBeInTheDocument();
+    expect(screen.getByText("“Merge pull request #4”")).toBeInTheDocument();
+    expect(screen.getByText("Recent builds")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open deployment/ })).toHaveAttribute("href", "https://names.example.com");
+  });
+
   it("lists the selected project's custom domains even without deployments", async () => {
     const user = userEvent.setup();
     const projectData: DeploymentsResponse = {

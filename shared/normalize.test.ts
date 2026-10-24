@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateSummary, filterProjects, mapDeploymentStatus, normalizeDeployment, sortProjects, type CloudflareDeployment } from "./normalize";
+import { calculateSummary, filterProjects, mapDeploymentStatus, mapWorkerBuildStatus, normalizeDeployment, normalizeWorkerBuild, projectKey, sortProjects, type CloudflareDeployment } from "./normalize";
 import type { ProjectDeployment } from "./types";
 
 const deployment = (overrides: Partial<CloudflareDeployment> = {}): CloudflareDeployment => ({
@@ -71,5 +71,41 @@ describe("project summaries", () => {
     const projects = [{ ...project("console", "active", "2026-09-02T10:00:00Z"), deployments: [{ ...project("console", "active", "2026-09-02T10:00:00Z").deployments[0], branch: "feature/search" }] }, project("marketing", "success", "2026-09-02T09:00:00Z")];
     expect(filterProjects(projects, "active", "search").map(({ projectName }) => projectName)).toEqual(["console"]);
     expect(filterProjects(projects, "failure", "")).toEqual([]);
+  });
+});
+
+describe("Workers Builds normalization", () => {
+  it.each([
+    [{ status: "queued" }, "queued"],
+    [{ status: "initializing" }, "active"],
+    [{ status: "running" }, "active"],
+    [{ status: "stopped", build_outcome: "success" }, "success"],
+    [{ status: "stopped", build_outcome: "fail" }, "failure"],
+    [{ status: "stopped", build_outcome: "cancelled" }, "canceled"],
+    [{ status: "stopped", build_outcome: "terminated" }, "canceled"],
+    [{ status: "stopped" }, "unknown"],
+  ])("maps build %j to %s", (build, expected) => {
+    expect(mapWorkerBuildStatus(build)).toBe(expected);
+  });
+
+  it("maps commit, branch and links for a production build", () => {
+    expect(normalizeWorkerBuild({ build_uuid: "0f4e2c1a-uuid", status: "stopped", build_outcome: "success", created_on: "2026-10-24T20:38:00Z", stopped_on: "2026-10-24T20:39:00Z", build_trigger_metadata: { branch: "main", commit_hash: "abc123", commit_message: "Ship" }, trigger: { branch_includes: ["main"] } }, "account-123", "namesearch")).toMatchObject({
+      id: "0f4e2c1a-uuid",
+      shortId: "0f4e2c1a",
+      projectName: "namesearch",
+      environment: "production",
+      status: "success",
+      stage: "success",
+      branch: "main",
+      commitHash: "abc123",
+      commitMessage: "Ship",
+      modifiedAt: "2026-10-24T20:39:00Z",
+      dashboardUrl: "https://dash.cloudflare.com/account-123/workers/services/view/namesearch/production/deployments",
+    });
+  });
+
+  it("keys Workers separately from Pages projects with the same name", () => {
+    expect(projectKey({ projectName: "site" })).toBe("site");
+    expect(projectKey({ kind: "worker", projectName: "site" })).toBe("worker:site");
   });
 });
