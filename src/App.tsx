@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, Moon, Sun, SunMoon, TriangleAlert } from "lucide-react";
 import { filterProjects, projectKey } from "../shared/normalize";
 import { useDeployments } from "./hooks/useDeployments";
 import { ProjectDetailPage } from "./components/ProjectDetailPage";
@@ -7,7 +8,9 @@ import { ErrorState, LoadingState } from "./components/states";
 import { formatDate } from "./lib/format";
 import { POLL_OPTIONS } from "./lib/polling";
 import { projectPathForKey, readProjectPage, readSelectedProject } from "./lib/routing";
-import { nextThemeMode, readSystemTheme, readThemeMode, themeIcon, THEME_STORAGE_KEY, type ThemeMode } from "./lib/theme";
+import { applyTheme, nextThemeMode, readSystemTheme, readThemeMode, THEME_STORAGE_KEY, type ThemeMode } from "./lib/theme";
+
+const themeIcon = { auto: SunMoon, dark: Moon, light: Sun } satisfies Record<ThemeMode, typeof Sun>;
 
 function App() {
   const [isPaused, setIsPaused] = useState(false);
@@ -41,9 +44,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const effectiveTheme = themeMode === "auto" ? systemTheme : themeMode;
-    document.documentElement.dataset.theme = effectiveTheme;
-    document.documentElement.style.colorScheme = effectiveTheme;
+    applyTheme(themeMode === "auto" ? systemTheme : themeMode);
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
     } catch {
@@ -90,10 +91,10 @@ function App() {
     setSelectedProjectName(null);
   };
 
+  const ThemeIcon = themeIcon[themeMode];
+
   return (
     <main className="app-shell">
-      <div className="ambient-glow ambient-glow-one" />
-      <div className="ambient-glow ambient-glow-two" />
       <header className={`topbar ${isTopbarScrolled ? "topbar-scrolled" : ""}`}>
         <a className="brand" href="/" aria-label="Pages Deploy Tracker home" onClick={(event) => { if (selectedProjectName) { event.preventDefault(); goHome(); } }}>
           <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>
@@ -102,9 +103,9 @@ function App() {
         <div className="topbar-meta">
           <span className="live-status">
             {isBackgroundRefreshing && <span className="background-refresh-indicator" role="status" aria-label="Refreshing projects" title="Refreshing projects"><span className="background-refresh-spinner" aria-hidden="true"><span /><span /></span></span>}
-            <span className={`connection-state ${connectionFailed ? "error" : ""}`}><span className="connection-dot" />{connectionFailed ? "ERROR" : "LIVE"}</span>
+            <span className={`connection-state ${connectionFailed ? "error" : ""}`}><span className="connection-dot" aria-hidden="true" />{connectionFailed ? "ERROR" : "LIVE"}</span>
           </span>
-          <button className="theme-toggle" type="button" onClick={() => setThemeMode((mode) => nextThemeMode[mode])} aria-label={`Theme mode: ${themeMode}. Switch to ${nextThemeMode[themeMode]}`} title={`Theme: ${themeMode}`}><span aria-hidden="true">{themeIcon[themeMode]}</span></button>
+          <button className="theme-toggle" type="button" onClick={() => setThemeMode((mode) => nextThemeMode[mode])} aria-label={`Theme mode: ${themeMode}. Switch to ${nextThemeMode[themeMode]}`} title={`Theme: ${themeMode}`}><ThemeIcon className="icon" aria-hidden="true" /></button>
         </div>
       </header>
 
@@ -121,18 +122,18 @@ function App() {
         onPause={() => setIsPaused((paused) => !paused)}
       /> : !selectedProjectName ? <ProjectIndexPage projects={visibleProjects} data={data} query={query} onSearch={setQuery} loading={loadState.status === "loading"} onProjectClick={openProject} /> : null}
 
-      {loadState.status === "error" && data && !selectedProjectName && <div className="notice notice-warning" role="alert"><span aria-hidden="true">!</span><span>{loadState.message} Showing the last successful result.</span></div>}
+      {loadState.status === "error" && data && !selectedProjectName && <div className="notice notice-warning" role="alert"><TriangleAlert className="icon" aria-hidden="true" /><span>{loadState.message} Showing the last successful result.</span></div>}
 
       {data && !selectedProjectName && <>
-        {data.warnings.length > 0 && <div className="partial-warning" role="status"><span className="warning-icon" aria-hidden="true">!</span><span>{data.warnings.length} project{data.warnings.length === 1 ? "" : "s"} could not be queried. The rest of the account is still shown.</span></div>}
+        {data.warnings.length > 0 && <div className="partial-warning" role="status"><TriangleAlert className="icon warning-icon" aria-hidden="true" /><span>{data.warnings.length} project{data.warnings.length === 1 ? "" : "s"} could not be queried. The rest of the account is still shown.</span></div>}
 
         {data.pagination.totalPages > 1 && <nav className="pagination" aria-label="Project pages">
-          <button type="button" onClick={() => changePage(Math.max(1, page - 1))} disabled={page <= 1 || loadState.status === "loading"} aria-label="Previous project page">Previous</button>
+          <button type="button" onClick={() => changePage(Math.max(1, page - 1))} disabled={page <= 1 || loadState.status === "loading"} aria-label="Previous project page"><ChevronLeft className="icon" aria-hidden="true" />Previous</button>
           <span>Page {data.pagination.page} of {data.pagination.totalPages}</span>
-          <button type="button" onClick={() => changePage(Math.min(data.pagination.totalPages, page + 1))} disabled={page >= data.pagination.totalPages || loadState.status === "loading"} aria-label="Next project page">Next</button>
+          <button type="button" onClick={() => changePage(Math.min(data.pagination.totalPages, page + 1))} disabled={page >= data.pagination.totalPages || loadState.status === "loading"} aria-label="Next project page">Next<ChevronRight className="icon" aria-hidden="true" /></button>
         </nav>}
 
-        {!selectedProjectName && <footer className="status-footer"><span><span className="footer-dot" />Last pulled {formatDate(data.fetchedAt)}</span></footer>}
+        {!selectedProjectName && <footer className="status-footer"><span><span className="footer-dot" aria-hidden="true" />Last pulled {formatDate(data.fetchedAt)}</span></footer>}
       </>}
 
       {loadState.status === "loading" && !data && <LoadingState />}

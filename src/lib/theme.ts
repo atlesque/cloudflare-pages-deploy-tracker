@@ -19,4 +19,11 @@ export const readSystemTheme = (): "dark" | "light" => {
 };
 
 export const nextThemeMode: Record<ThemeMode, ThemeMode> = { auto: "dark", dark: "light", light: "auto" };
-export const themeIcon: Record<ThemeMode, string> = { auto: "◐", dark: "☾", light: "☀" };
+
+// Harborlight switches every color token on the `dark` class of <html>; public/boot.js applies the same class before first paint.
+export const applyTheme = (theme: "dark" | "light") => {
+  const root = document.documentElement;
+  root.classList.toggle("dark", theme === "dark");
+  root.style.colorScheme = theme;
+  document.querySelector('meta[name="theme-color"]:not([media])')?.setAttribute("content", theme === "dark" ? "#010810" : "#ffffff");
+};

@@ -2,6 +2,10 @@
 
 A read-only React dashboard for the latest Cloudflare Pages deployment state, and Workers Builds state for Workers connected to Git, across one account. The browser talks to `/api/deployments`; the Pages Function keeps the Cloudflare API token server-side and returns only normalized dashboard fields.
 
+## Design
+
+The UI follows the Harborlight design system: its color tokens (light and dark), Schibsted Grotesk and Martian Mono fonts, 0.25rem radius, outline cards and Lucide icons. Harborlight targets Nuxt UI, so the tokens are mirrored as plain CSS variables in `src/styles.css` instead. Fonts are self-hosted from `public/fonts`, and `public/boot.js` applies the saved Auto/Dark/Light choice before first paint.
+
 ## Local setup
 
 Requirements: Node.js 20+ and pnpm.
