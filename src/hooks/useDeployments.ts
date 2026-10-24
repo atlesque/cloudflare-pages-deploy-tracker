@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getDeployments, mergeProjectData, type LoadState } from "../lib/api";
+import { getDeployments, mergeProjectData, readCachedDeployments, writeCachedDeployments, type LoadState } from "../lib/api";
 
 interface UseDeploymentsOptions {
   page: number;
@@ -9,7 +9,13 @@ interface UseDeploymentsOptions {
 }
 
 export function useDeployments({ page, selectedProjectName, isPaused, intervalMs }: UseDeploymentsOptions) {
-  const [loadState, setLoadState] = useState<LoadState>({ status: "idle" });
+  // A cached response from the last visit renders straight away and the first request then runs
+  // as a background refresh, so a repeat visit never starts on skeletons.
+  const [loadState, setLoadState] = useState<LoadState>(() => {
+    const cached = readCachedDeployments(page);
+    return cached ? { status: "success", data: cached } : { status: "idle" };
+  });
+  const startFromCache = useRef(loadState.status === "success");
   const [failureCount, setFailureCount] = useState(0);
   const inFlight = useRef(false);
   const backgroundInFlight = useRef(false);
@@ -18,6 +24,7 @@ export function useDeployments({ page, selectedProjectName, isPaused, intervalMs
   const backgroundAbortController = useRef<AbortController | null>(null);
   const loadStateRef = useRef(loadState);
   const [isBackgroundRefreshing, setIsBackgroundRefreshing] = useState(false);
+  const backgroundRefreshRef = useRef<() => Promise<void>>(async () => undefined);
   loadStateRef.current = loadState;
 
   const refresh = useCallback(async (requestedPage = page) => {
@@ -30,6 +37,7 @@ export function useDeployments({ page, selectedProjectName, isPaused, intervalMs
     try {
       const data = await getDeployments(controller.signal, requestedPage);
       if (!mounted.current) return;
+      writeCachedDeployments(requestedPage, data);
       setFailureCount(0);
       setLoadState({ status: "success", data });
     } catch (error) {
@@ -47,7 +55,12 @@ export function useDeployments({ page, selectedProjectName, isPaused, intervalMs
 
   useEffect(() => {
     mounted.current = true;
-    void refresh();
+    if (startFromCache.current) {
+      startFromCache.current = false;
+      void backgroundRefreshRef.current();
+    } else {
+      void refresh();
+    }
     return () => {
       mounted.current = false;
       abortController.current?.abort();
@@ -76,6 +89,7 @@ export function useDeployments({ page, selectedProjectName, isPaused, intervalMs
       const current = loadStateRef.current;
       const previous = current.status === "success" ? current.data : current.previous;
       const mergedData = previous ? mergeProjectData(previous, refreshedData) : refreshedData;
+      writeCachedDeployments(requestedPage, refreshedData);
       setFailureCount(0);
       setLoadState({ status: "success", data: mergedData });
     } catch (error) {
@@ -91,6 +105,8 @@ export function useDeployments({ page, selectedProjectName, isPaused, intervalMs
       if (mounted.current) setIsBackgroundRefreshing(false);
     }
   }, [page]);
+
+  backgroundRefreshRef.current = backgroundRefresh;
 
   useEffect(() => {
     if (selectedProjectName || !data || loadState.status === "loading") return;

@@ -90,9 +90,13 @@ export async function collectDeployments(accountId: string, token: string, optio
 
   // Pages projects and Workers share one paginated list, so both inventories are listed in
   // full (cheap) and deployments are only fetched for the entries on the requested page.
+  // Worker custom domains only depend on the Workers listing, so they load while the Pages
+  // inventory is still paginating instead of adding a round trip afterwards.
+  const workerListingPromise = listWorkerScripts(accountPath, token, options);
+  const workerDomainsPromise = workerListingPromise.then((listing) => (listing.scripts.length > 0 ? listWorkerDomains(accountPath, token, options) : []));
   const [rawProjects, workerListing] = await Promise.all([
     fetchAllPages<CloudflareProject>(projectPath, token, perPage, { ...options, operation: "list_projects" }),
-    listWorkerScripts(accountPath, token, options),
+    workerListingPromise,
   ]);
   const entries: ProjectEntry[] = [
     ...rawProjects.map((project): ProjectEntry => ({ kind: "pages", name: String(project.name ?? ""), sortHint: parseTime(project.latest_deployment?.modified_on ?? project.latest_deployment?.created_on ?? project.created_on), project })),
@@ -102,12 +106,12 @@ export async function collectDeployments(accountId: string, token: string, optio
   const totalProjects = entries.length;
   const totalPages = Math.max(1, Math.ceil(totalProjects / perPage));
   const pageEntries = entries.slice((page - 1) * perPage, page * perPage);
-  const workerDomains = pageEntries.some((entry) => entry.kind === "worker") ? await listWorkerDomains(accountPath, token, options) : [];
 
-  const projectResults = await mapWithConcurrency(pageEntries, options.projectConcurrency ?? 6, (entry) =>
+  // One page of entries is small (projectPageSize), so all histories are requested in a single wave.
+  const projectResults = await mapWithConcurrency(pageEntries, options.projectConcurrency ?? perPage, (entry) =>
     entry.kind === "pages"
       ? collectPagesProject(entry.project, projectPath, accountId, dashboardAccountId, token, options)
-      : collectWorker(entry.script, accountPath, dashboardAccountId, workerDomains, token, options));
+      : collectWorker(entry.script, accountPath, dashboardAccountId, workerDomainsPromise, token, options));
 
   const warnings = [...(workerListing.warning ? [workerListing.warning] : []), ...projectResults.flatMap((project) => (project.error ? [project.error] : []))];
   return {
@@ -135,8 +139,14 @@ async function collectPagesProject(rawProject: CloudflareProject, projectPath: s
   }
 }
 
-async function collectWorker(script: CloudflareWorkerScript, accountPath: string, dashboardAccountId: string, domains: CloudflareWorkerDomain[], token: string, options: CollectionOptions): Promise<ProjectDeployment> {
-  const worker = normalizeWorker(script, dashboardAccountId, domains);
+async function collectWorker(script: CloudflareWorkerScript, accountPath: string, dashboardAccountId: string, domainsPromise: Promise<CloudflareWorkerDomain[]>, token: string, options: CollectionOptions): Promise<ProjectDeployment> {
+  // The build history request does not need the custom domains, so both are awaited together.
+  const [domains, history] = await Promise.all([domainsPromise, collectWorkerBuilds(script, accountPath, dashboardAccountId, token, options)]);
+  return { ...history, domains: normalizeWorker(script, dashboardAccountId, domains).domains };
+}
+
+async function collectWorkerBuilds(script: CloudflareWorkerScript, accountPath: string, dashboardAccountId: string, token: string, options: CollectionOptions): Promise<ProjectDeployment> {
+  const worker = normalizeWorker(script, dashboardAccountId);
   if (!worker.projectId) return { ...worker, deployments: [] };
   const buildsPath = `${accountPath}/builds/workers/${encodePathPart(worker.projectId)}/builds?page=1&per_page=${options.deploymentPageSize ?? DEFAULT_DEPLOYMENT_PAGE_SIZE}`;
   try {
@@ -193,8 +203,10 @@ export const onRequestGet: PagesFunction<TrackerEnv> = async (context) => {
   try {
     const requestedPage = Number(new URL(context.request.url).searchParams.get("page") ?? "1");
     const page = Number.isFinite(requestedPage) && requestedPage >= 1 ? Math.floor(requestedPage) : 1;
+    const startedAt = Date.now();
     const data = await collectDeployments(accountId, token, { page, requestId, logger: defaultRequestLogger });
-    return new Response(JSON.stringify(data), { headers: jsonHeaders });
+    // Server-Timing shows the Cloudflare API time in the browser's network panel.
+    return new Response(JSON.stringify(data), { headers: { ...jsonHeaders, "Server-Timing": `cloudflare;desc="Cloudflare API";dur=${Date.now() - startedAt}` } });
   } catch (error) {
     const warning = classifyApiError(error, undefined, { requestId, operation: "collect_deployments", endpoint: "/api/deployments", method: "GET" });
     if (error instanceof CloudflareApiError && error.status === 401) {

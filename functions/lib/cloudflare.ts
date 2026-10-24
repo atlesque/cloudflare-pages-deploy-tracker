@@ -240,23 +240,33 @@ export async function fetchAllPages<T>(
   token: string,
   perPage: number,
   dependencies: RequestDependencies = {},
+  concurrency = 6,
 ): Promise<T[]> {
-  const results: T[] = [];
-  let page = 1;
-  let totalPages: number | undefined;
+  const separator = path.includes("?") ? "&" : "?";
+  const requestPage = (page: number) => requestCloudflareEnvelope<T[]>(`${path}${separator}page=${page}&per_page=${perPage}`, token, dependencies);
+  const isLastPage = (pageResults: T[], page: number, totalPages: number | undefined) => pageResults.length === 0 || (totalPages !== undefined && page >= totalPages) || pageResults.length < perPage;
 
+  const first = await requestPage(1);
+  const results: T[] = [...(first.result ?? [])];
+  let totalPages = first.result_info?.total_pages;
+  if (isLastPage(first.result ?? [], 1, totalPages)) return results;
+
+  // When Cloudflare reports the page count, the remaining pages are independent and are fetched
+  // concurrently instead of one round trip at a time.
+  if (totalPages !== undefined) {
+    const remainingPages = Array.from({ length: Math.min(totalPages, 1_000) - 1 }, (_, index) => index + 2);
+    const pages = await mapWithConcurrency(remainingPages, concurrency, requestPage);
+    for (const response of pages) results.push(...(response.result ?? []));
+    return results;
+  }
+
+  let page = 2;
   while (page <= (totalPages ?? 1_000)) {
-    const separator = path.includes("?") ? "&" : "?";
-    const response = await requestCloudflareEnvelope<T[]>(
-      `${path}${separator}page=${page}&per_page=${perPage}`,
-      token,
-      dependencies,
-    );
+    const response = await requestPage(page);
     const pageResults = response.result ?? [];
-    const pageInfo = response.result_info;
     results.push(...pageResults);
-    totalPages = pageInfo?.total_pages ?? totalPages;
-    if (pageResults.length === 0 || (totalPages !== undefined && page >= totalPages) || pageResults.length < perPage) break;
+    totalPages = response.result_info?.total_pages ?? totalPages;
+    if (isLastPage(pageResults, page, totalPages)) break;
     page += 1;
   }
 
