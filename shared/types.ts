@@ -2,6 +2,8 @@ export type DeploymentStatus = "active" | "queued" | "success" | "failure" | "ca
 
 export type DeploymentEnvironment = "production" | "preview" | "unknown";
 
+export type ProjectKind = "pages" | "worker";
+
 export interface ApiWarning {
   code: string;
   message: string;
@@ -49,6 +51,8 @@ export interface DeploymentSummary {
 }
 
 export interface ProjectDeployment {
+  /** Pages projects omit this; Workers deployed through Workers Builds use "worker". */
+  kind?: ProjectKind;
   projectName: string;
   projectId?: string;
   productionBranch?: string;

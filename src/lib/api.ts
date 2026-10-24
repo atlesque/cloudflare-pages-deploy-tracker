@@ -1,4 +1,4 @@
-import { sortProjects } from "../../shared/normalize";
+import { projectKey, sortProjects } from "../../shared/normalize";
 import type { ApiWarning, DeploymentsResponse } from "../../shared/types";
 
 export type LoadState =
@@ -26,8 +26,8 @@ const responsePreview = (body: string): string => {
 export const mergeProjectData = (previous: DeploymentsResponse, next: DeploymentsResponse): DeploymentsResponse => ({
   ...next,
   projects: sortProjects(next.projects.map((refreshedProject) => {
-    const previousProject = previous.projects.find((project) => project.projectName === refreshedProject.projectName);
-    return previousProject ? { ...previousProject, domains: refreshedProject.domains, deployments: refreshedProject.deployments, error: refreshedProject.error } : refreshedProject;
+    const previousProject = previous.projects.find((project) => projectKey(project) === projectKey(refreshedProject));
+    return previousProject ? { ...previousProject, domains: refreshedProject.domains, productionBranch: refreshedProject.productionBranch, deployments: refreshedProject.deployments, error: refreshedProject.error } : refreshedProject;
   })),
 });
 

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { filterProjects } from "../shared/normalize";
+import { filterProjects, projectKey } from "../shared/normalize";
 import { useDeployments } from "./hooks/useDeployments";
 import { ProjectDetailPage } from "./components/ProjectDetailPage";
 import { ProjectIndexPage } from "./components/ProjectIndexPage";
 import { ErrorState, LoadingState } from "./components/states";
 import { formatDate } from "./lib/format";
 import { POLL_OPTIONS } from "./lib/polling";
-import { readProjectPage, readSelectedProject } from "./lib/routing";
+import { projectPathForKey, readProjectPage, readSelectedProject } from "./lib/routing";
 import { nextThemeMode, readSystemTheme, readThemeMode, themeIcon, THEME_STORAGE_KEY, type ThemeMode } from "./lib/theme";
 
 function App() {
@@ -54,7 +54,7 @@ function App() {
   const { loadState, setLoadState, failureCount, isBackgroundRefreshing, data, refresh } = useDeployments({ page, selectedProjectName, isPaused, intervalMs });
 
   const visibleProjects = useMemo(() => data ? filterProjects(data.projects, "all", query) : [], [data, query]);
-  const selectedProject = useMemo(() => visibleProjects.find((project) => project.projectName === selectedProjectName), [selectedProjectName, visibleProjects]);
+  const selectedProject = useMemo(() => visibleProjects.find((project) => projectKey(project) === selectedProjectName), [selectedProjectName, visibleProjects]);
   const isRefreshing = loadState.status === "loading" && Boolean(data);
   const hasTotalError = loadState.status === "error" && !data;
   const connectionFailed = loadState.status === "error";
@@ -76,11 +76,11 @@ function App() {
     setPage(nextPage);
   };
 
-  const openProject = (projectName: string) => {
+  const openProject = (key: string) => {
     const url = new URL(window.location.href);
-    url.pathname = `/projects/${encodeURIComponent(projectName)}`;
+    url.pathname = projectPathForKey(key);
     window.history.pushState(null, "", `${url.pathname}${url.search}`);
-    setSelectedProjectName(projectName);
+    setSelectedProjectName(key);
   };
 
   const goHome = () => {
