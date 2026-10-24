@@ -34,6 +34,22 @@ describe("dashboard", () => {
     expect(screen.getAllByTestId("project-skeleton")).toHaveLength(10);
   });
 
+  it("shows the cached result from the last visit while the first request is in flight", async () => {
+    const fresh = { ...data, fetchedAt: new Date().toISOString() };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fresh), { status: 200 })));
+    const { unmount } = render(<App />);
+    expect(await screen.findByText("checkout")).toBeInTheDocument();
+    unmount();
+
+    const pendingFetch = vi.fn(() => new Promise<Response>(() => undefined));
+    vi.stubGlobal("fetch", pendingFetch);
+    render(<App />);
+    expect(screen.getByText("checkout")).toBeInTheDocument();
+    expect(screen.queryByText("Pulling your Pages projects…")).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId("project-skeleton")).toHaveLength(0);
+    expect(pendingFetch).toHaveBeenCalledWith("/api/deployments?page=1", expect.anything());
+  });
+
   it("renders a minimal project index", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(data), { status: 200 })));
     render(<App />);

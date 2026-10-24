@@ -14,6 +14,20 @@ describe("Cloudflare API client", () => {
     expect(fetcher.mock.calls[1][0]).toContain("page=2&per_page=1");
   });
 
+  it("requests the remaining pages concurrently once the page count is known", async () => {
+    const resolvers: Array<() => void> = [];
+    const fetcher = vi.fn((input: RequestInfo | URL) => {
+      const page = Number(new URL(String(input)).searchParams.get("page"));
+      const body = response({ result: [{ name: `page-${page}` }], success: true, result_info: { page, total_pages: 3 } });
+      if (page === 1) return Promise.resolve(body);
+      return new Promise<Response>((resolve) => resolvers.push(() => resolve(body)));
+    });
+    const pending = fetchAllPages<{ name: string }>("/accounts/account/pages/projects", "secret-token", 1, { fetcher });
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    resolvers.reverse().forEach((resolve) => resolve());
+    expect(await pending).toEqual([{ name: "page-1" }, { name: "page-2" }, { name: "page-3" }]);
+  });
+
   it("retries 429 responses and never returns the Authorization header", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(response({ errors: [{ message: "slow down" }] }, 429)).mockResolvedValueOnce(response({ result: { ok: true }, success: true }));
     const sleep = vi.fn().mockResolvedValue(undefined);

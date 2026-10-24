@@ -31,7 +31,58 @@ export const mergeProjectData = (previous: DeploymentsResponse, next: Deployment
   })),
 });
 
+const CACHE_STORAGE_KEY_PREFIX = "pages-deploy-tracker-deployments-page-";
+const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+
+// The last successful response per page is kept in localStorage so a repeat visit can render it
+// immediately while the fresh request is still in flight.
+export const readCachedDeployments = (page: number): DeploymentsResponse | undefined => {
+  try {
+    const saved = window.localStorage.getItem(`${CACHE_STORAGE_KEY_PREFIX}${page}`);
+    if (!saved) return undefined;
+    const data = JSON.parse(saved) as DeploymentsResponse;
+    if (!Array.isArray(data?.projects) || !data.pagination || !data.summary) return undefined;
+    if (!(Date.now() - Date.parse(data.fetchedAt) < CACHE_MAX_AGE_MS)) return undefined;
+    return data;
+  } catch {
+    return undefined;
+  }
+};
+
+export const writeCachedDeployments = (page: number, data: DeploymentsResponse): void => {
+  try {
+    window.localStorage.setItem(`${CACHE_STORAGE_KEY_PREFIX}${page}`, JSON.stringify(data));
+  } catch {
+    // Storage may be unavailable or full; the cache is only a first-paint optimisation.
+  }
+};
+
+let prefetched: { page: number; response: Promise<DeploymentsResponse> } | null = null;
+
+// Starts the first API request before React mounts so it overlaps with loading the app bundle.
+export function prefetchDeployments(page: number): void {
+  const response = requestDeployments(page);
+  response.catch(() => undefined);
+  prefetched = { page, response };
+}
+
+const abortable = <T>(promise: Promise<T>, signal: AbortSignal): Promise<T> => {
+  if (signal.aborted) return Promise.reject(new DOMException("The request was aborted.", "AbortError"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException("The request was aborted.", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+};
+
 export async function getDeployments(signal: AbortSignal, page: number): Promise<DeploymentsResponse> {
+  const pending = prefetched;
+  prefetched = null;
+  if (pending?.page === page) return abortable(pending.response, signal);
+  return requestDeployments(page, signal);
+}
+
+async function requestDeployments(page: number, signal?: AbortSignal): Promise<DeploymentsResponse> {
   const requestUrl = `/api/deployments?page=${page}`;
   let response: Response;
   try {
